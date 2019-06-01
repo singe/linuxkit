@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+echo "------ HOOK START - BUILD -------"
+# Add wifi kernel config to default config
+cat config-$KERNEL_SERIES-x86_64 config$EXTRA > config-$KERNEL_SERIES-x86_64$EXTRA
+
+# Build it
+make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
+
+# Extract the just built image name and tag it to the kernel series e.g. 4.14.x-wifi
+buildimage=$(docker images --filter=reference='linuxkit\/kernel:*' --format {{.Repository}}:{{.Tag}})
+newimage="$DOCKER_REPO:$KERNEL_SERIES$EXTRA"
+echo Tagging $buildimage as $newimage
+docker tag $buildimage $newimage
+docker push $newimage
+
+# Tag the just built image as the kernel version e.g. 4.14.118-wifi
+KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
+newimage="$DOCKER_REPO:$KERNEL_VERSION$EXTRA"
+echo Tagging $buildimage as $newimage
+docker tag $buildimage $newimage
+docker push $newimage
+
+echo "------ HOOK END - BUILD -------"
