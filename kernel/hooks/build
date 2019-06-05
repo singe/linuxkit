@@ -20,4 +20,9 @@ echo Tagging $buildimage as $newimage
 docker tag $buildimage $newimage
 docker push $newimage
 
+# Tag the just built image as latest
+newimage="$DOCKER_REPO:latest"
+echo Tagging $buildimage as $newimage
+docker tag $buildimage $newimage
+docker push $newimage
 echo "------ HOOK END - BUILD -------"
