@@ -1,4 +1,4 @@
-FROM linuxkit/alpine:3fdc49366257e53276c6f363956a4353f95d9a81 AS kernel-build
+FROM linuxkit/alpine:e2391e0b164c57db9f6c4ae110ee84f766edc430 AS kernel-build
 RUN apk add \
     argp-standalone \
     automake \
@@ -30,16 +30,16 @@ RUN apk add \
     xz-dev \
     zlib-dev
 
-# libunwind-dev pkg is missed from arm64 now, below statement will be removed if the pkg is available.
-RUN [ $(uname -m) == x86_64 ] && apk add libunwind-dev || true
+# libunwind-dev pkg is missing for s390x for now. Only install on other arch
+RUN [ $(uname -m) != s390x ] && apk add libunwind-dev || true
 
 ARG KERNEL_VERSION
 ARG KERNEL_SERIES
 ARG EXTRA
 ARG DEBUG
 
-ENV WIREGUARD_VERSION=0.0.20191226
-ENV WIREGUARD_SHA256="7c0e576459c6337bcdea692bdbec561719a15da207dc739e0e3e60ff821a5491"
+ENV WIREGUARD_VERSION=1.0.20200506
+ENV WIREGUARD_SHA256="98a99f2b825a82d57a7213e666f1ee4f7cc02bddb09bf4908b4b09447a8f121e"
 ENV WIREGUARD_URL=https://git.zx2c4.com/wireguard-linux-compat/snapshot/wireguard-linux-compat-${WIREGUARD_VERSION}.tar.xz
 
 # We copy the entire directory. This copies some unneeded files, but
@@ -165,12 +165,14 @@ RUN case $(uname -m) in \
     cp System.map /out && \
     ([ -n "${DEBUG}" ] && cp vmlinux /out || true)
 
-# WireGuard
-RUN curl -fsSL -o /wireguard.tar.xz "${WIREGUARD_URL}" && \
-    echo "${WIREGUARD_SHA256}  /wireguard.tar.xz" | sha256sum -c - && \
-    cp /wireguard.tar.xz /out/src/ && \
-    tar -C / --one-top-level=wireguard --strip-components=2 -xJf /wireguard.tar.xz "wireguard-linux-compat-${WIREGUARD_VERSION}/src" && \
-    make -j "$(getconf _NPROCESSORS_ONLN)" M="/wireguard" modules
+# WireGuard (skip kernels which have it in tree)
+RUN if [  ! -d /linux/drivers/net/wireguard ]; then \
+        curl -fsSL -o /wireguard.tar.xz "${WIREGUARD_URL}" && \
+        echo "${WIREGUARD_SHA256}  /wireguard.tar.xz" | sha256sum -c - && \
+        cp /wireguard.tar.xz /out/src/ && \
+        tar -C / --one-top-level=wireguard --strip-components=2 -xJf /wireguard.tar.xz "wireguard-linux-compat-${WIREGUARD_VERSION}/src" && \
+        make -j "$(getconf _NPROCESSORS_ONLN)" M="/wireguard" modules; \
+     fi
 
 # Modules and Device Tree binaries
 RUN make INSTALL_MOD_PATH=/tmp/kernel-modules modules_install && \

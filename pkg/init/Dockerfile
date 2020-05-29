@@ -1,4 +1,4 @@
-FROM linuxkit/alpine:3fdc49366257e53276c6f363956a4353f95d9a81 AS build
+FROM linuxkit/alpine:e2391e0b164c57db9f6c4ae110ee84f766edc430 AS build
 RUN apk add --no-cache --initdb alpine-baselayout make gcc musl-dev git linux-headers
 
 ADD usermode-helper.c ./
@@ -6,6 +6,8 @@ RUN LDFLAGS=-static CFLAGS=-Werror make usermode-helper
 
 RUN apk add --no-cache go musl-dev
 ENV GOPATH=/go PATH=$PATH:/go/bin
+# Hack to work around an issue with go on arm64 requiring gcc
+RUN [ $(uname -m) = aarch64 ] && apk add --no-cache gcc || true
 
 COPY cmd /go/src/cmd
 RUN go-compile.sh /go/src/cmd/init
@@ -16,7 +18,7 @@ RUN mkdir /tmp/bin && cd /tmp/bin/ && cp /go/bin/rc.init . && ln -s rc.init rc.s
 RUN cd /go/src/cmd/service && ./skanky-vendor.sh $GOPATH/src/github.com/containerd/containerd
 RUN go-compile.sh /go/src/cmd/service
 
-FROM linuxkit/alpine:3fdc49366257e53276c6f363956a4353f95d9a81 AS mirror
+FROM linuxkit/alpine:e2391e0b164c57db9f6c4ae110ee84f766edc430 AS mirror
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 RUN apk add --no-cache --initdb -p /out alpine-baselayout busybox musl
 

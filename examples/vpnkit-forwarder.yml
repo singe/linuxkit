@@ -1,16 +1,16 @@
 kernel:
-  image: linuxkit/kernel:4.19.90
+  image: linuxkit/kernel:5.4.39
   cmdline: "console=ttyS0"
 init:
-  - linuxkit/init:1d8e0532ca588c5ad0d9ca6038349a70bb7ac626
-  - linuxkit/runc:c1f0db27e71d948f3134b31ce76276f843849b0a
-  - linuxkit/containerd:751de142273e1b5d2d247d2832d654ab92e907bc
+  - linuxkit/init:v0.8
+  - linuxkit/runc:v0.8
+  - linuxkit/containerd:v0.8
 onboot:
   - name: dhcpcd
-    image: linuxkit/dhcpcd:v0.7
+    image: linuxkit/dhcpcd:v0.8
     command: ["/sbin/dhcpcd", "--nobackground", "-f", "/dhcpcd.conf", "-1"]
   - name: mount-vpnkit
-    image: alpine:3.9
+    image: alpine:3.11
     binds:
         - /var/:/host_var:rbind,rshared
     capabilities:
@@ -19,9 +19,9 @@ onboot:
     command: ["sh", "-c", "mkdir /host_var/vpnkit && mount -v -t 9p -o trans=virtio,dfltuid=1001,dfltgid=50,version=9p2000 port /host_var/vpnkit"]
 services:
   - name: sshd
-    image: linuxkit/sshd:v0.7
+    image: linuxkit/sshd:v0.8
   - name: vpnkit-forwarder
-    image: linuxkit/vpnkit-forwarder:v0.7
+    image: linuxkit/vpnkit-forwarder:v0.8
     binds:
         - /var/vpnkit:/port
     net: host

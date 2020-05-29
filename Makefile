@@ -1,7 +1,7 @@
-VERSION="v0.7+"
+VERSION="v0.8"
 GIT_COMMIT=$(shell git rev-list -1 HEAD)
 
-GO_COMPILE=linuxkit/go-compile:8de0e27a38498389e43b3a5b520d943a2b3be5ba
+GO_COMPILE=linuxkit/go-compile:b1446b2ba407225011f97ae1dba0f512ae7f9b84
 
 ifeq ($(OS),Windows_NT)
 LINUXKIT?=bin/linuxkit.exe
@@ -75,7 +75,7 @@ LOCAL_TARGET ?= $(LINUXKIT)
 .PHONY: local-check local-build local-test local-static-pie local-static local-dynamic local
 local-check: $(LINUXKIT_DEPS)
 	@echo gofmt... && o=$$(gofmt -s -l $(filter %.go,$(LINUXKIT_DEPS))) && if [ -n "$$o" ] ; then echo $$o ; exit 1 ; fi
-	@echo govet... && go tool vet -printf=false $(filter %.go,$(LINUXKIT_DEPS))
+	@echo govet... && go vet -printf=false ./src/cmd/linuxkit/...
 	@echo golint... && set -e ; for i in $(filter %.go,$(LINUXKIT_DEPS)); do golint $$i ; done
 	@echo ineffassign... && ineffassign  $(filter %.go,$(LINUXKIT_DEPS))
 

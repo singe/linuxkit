@@ -1,12 +1,14 @@
-# Use Debian stretch until https://bugs.alpinelinux.org/issues/8131 is resolved.
-FROM debian@sha256:de3eac83cd481c04c5d6c7344cd7327625a1d8b2540e82a8231b5675cef0ae5f AS qemu
+# Use Debian testing Qemu 4.2.0 until https://bugs.alpinelinux.org/issues/8131 is resolved.
+FROM debian@sha256:79f148e13b4c596d4ad7fd617aba3630e37cf04f04538699341ed1267bd61a23 AS qemu
 RUN apt-get update && apt-get install -y qemu-user-static && \
     mv /usr/bin/qemu-aarch64-static /usr/bin/qemu-aarch64 && \
     mv /usr/bin/qemu-arm-static /usr/bin/qemu-arm && \
     mv /usr/bin/qemu-ppc64le-static /usr/bin/qemu-ppc64le && \
-    mv /usr/bin/qemu-s390x-static /usr/bin/qemu-s390x
+    mv /usr/bin/qemu-s390x-static /usr/bin/qemu-s390x && \
+    mv /usr/bin/qemu-riscv64-static /usr/bin/qemu-riscv64 && \
+    rm /usr/bin/qemu-*-static
 
-FROM linuxkit/alpine:86cd4f51b49fb9a078b50201d892a3c7973d48ec AS mirror
+FROM linuxkit/alpine:e2391e0b164c57db9f6c4ae110ee84f766edc430 AS mirror
 
 RUN apk add --no-cache go musl-dev
 ENV GOPATH=/go PATH=$PATH:/go/bin

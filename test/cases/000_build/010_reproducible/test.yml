@@ -1,15 +1,15 @@
 # NOTE: Images build from this file likely do not run
 kernel:
-  image: linuxkit/kernel:4.19.90
+  image: linuxkit/kernel:5.4.39
   cmdline: "console=ttyS0"
 init:
-  - linuxkit/init:1d8e0532ca588c5ad0d9ca6038349a70bb7ac626
-  - linuxkit/runc:c1f0db27e71d948f3134b31ce76276f843849b0a
-  - linuxkit/containerd:751de142273e1b5d2d247d2832d654ab92e907bc
+  - linuxkit/init:v0.8
+  - linuxkit/runc:v0.8
+  - linuxkit/containerd:v0.8
 
 onboot:
   - name: dhcpcd
-    image: linuxkit/dhcpcd:v0.7
+    image: linuxkit/dhcpcd:v0.8
     command: ["/sbin/dhcpcd", "--nobackground", "-f", "/dhcpcd.conf", "-1"]
     # Add some random unsorted caps
     capabilities:
@@ -18,7 +18,7 @@ onboot:
 
 services:
   - name: testservice
-    image: linuxkit/ip:7b1cf3150bf5d9a0df7ef07572e2d81fe3c0c3d3
+    image: linuxkit/ip:v0.8
     # Some environments
     env:
       - BENV=true
