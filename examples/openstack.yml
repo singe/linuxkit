@@ -4,7 +4,7 @@ kernel:
 init:
   - linuxkit/init:v0.8
   - linuxkit/runc:v0.8
-  - linuxkit/containerd:v0.8
+  - linuxkit/containerd:a4aa19c608556f7d786852557c36136255220c1f
   - linuxkit/ca-certificates:v0.8
 onboot:
   - name: sysctl
@@ -19,7 +19,7 @@ services:
   - name: rngd
     image: linuxkit/rngd:v0.8
   - name: sshd
-    image: linuxkit/sshd:v0.8
+    image: linuxkit/sshd:666b4a1a323140aa1f332826164afba506abf597
     binds:
      - /run/config/ssh/authorized_keys:/root/.ssh/authorized_keys
   - name: nginx
