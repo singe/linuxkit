@@ -11,7 +11,8 @@ are downloaded at build time to create an image. The image is self-contained and
 so it can be tested reliably for continuous delivery.
 
 Components are specified as Docker images which are pulled from a registry during build if they
-are not available locally. The Docker images are optionally verified with Docker Content Trust.
+are not available locally. See [image-cache](./image-cache.md) for more details on local caching.
+The Docker images are optionally verified with Docker Content Trust.
 For private registries or private repositories on a registry credentials provided via
 `docker login` are re-used.
 
@@ -123,19 +124,6 @@ file:
 ```
 
 Because a `tmpfs` is mounted onto `/var`, `/run`, and `/tmp` by default, the `tmpfs` mounts will shadow anything specified in `files` section for those directories.
-
-## `trust`
-
-The `trust` section specifies which build components are to be cryptographically verified with
-[Docker Content Trust](https://docs.docker.com/engine/security/trust/content_trust/) prior to pulling.
-Trust is a central concern in any build system, and LinuxKit's is no exception: Docker Content Trust provides authenticity,
-integrity, and freshness guarantees for the components it verifies.  The LinuxKit maintainers are responsible for signing
-`linuxkit` components, though collaborators can sign their own images with Docker Content Trust or [Notary](https://github.com/docker/notary).
-
-- `image` lists which individual images to enforce pulling with Docker Content Trust.
-The image name may include tag or digest, but the matching also succeeds if the base image name is the same.
-- `org` lists which organizations for which Docker Content Trust is to be enforced across all images,
-for example `linuxkit` is the org for `linuxkit/kernel`
 
 ## Image specification
 
