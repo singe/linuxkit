@@ -1,0 +1,41 @@
+name: Release a tag
+
+on:
+  create:
+    tags:
+      - v*
+
+jobs:
+  build:
+    name: Build all targets
+    runs-on: macos-latest
+    steps:
+
+    - name: Set up Go 1.19
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.19.2
+      id: go
+
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Set path
+      run: echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
+      env:
+         GOPATH: ${{runner.workspace}}
+
+    - name: Build
+      run: |
+        make build-all-targets
+      env:
+        GOPATH: ${{runner.workspace}}
+
+    - name: GitHub Release
+      uses: softprops/action-gh-release@1e07f4398721186383de40550babbdf2b84acfc5
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        draft: true
+        files: bin/*
+        generate_release_notes: true

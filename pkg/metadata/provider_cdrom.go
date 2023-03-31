@@ -2,7 +2,7 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -48,7 +48,7 @@ func ListCDROMs() []Provider {
 	cdroms = append(cidevs, cdroms...)
 	cdroms = uniqueString(cdroms)
 	log.Debugf("unique devices to be checked: %v", cdroms)
-	providers := []Provider{}
+	var providers []Provider
 	for _, device := range cdroms {
 		providers = append(providers, NewCDROM(device))
 	}
@@ -65,7 +65,7 @@ func FindCIs() []string {
 		// Glob can only error on invalid pattern
 		panic(fmt.Sprintf("Invalid glob pattern: %s", blockDevs))
 	}
-	foundDevices := []string{}
+	var foundDevices []string
 	for _, device := range devs {
 		// get the base device name
 		dev := filepath.Base(device)
@@ -77,7 +77,7 @@ func FindCIs() []string {
 		dev = fmt.Sprintf("/dev/%s", dev)
 		log.Debugf("checking device: %s", dev)
 		// open readonly, ignore errors
-		disk, err := diskfs.OpenWithMode(dev, diskfs.ReadOnly)
+		disk, err := diskfs.Open(dev, diskfs.WithOpenMode(diskfs.ReadOnly))
 		if err != nil {
 			log.Debugf("failed to open device read-only: %s: %v", dev, err)
 			continue
@@ -100,14 +100,14 @@ func FindCIs() []string {
 
 // NewCDROM returns a new ProviderCDROM
 func NewCDROM(device string) *ProviderCDROM {
-	mountPoint, err := ioutil.TempDir("", "cd")
+	mountPoint, err := os.MkdirTemp("", "cd")
 	p := ProviderCDROM{device, mountPoint, err, []byte{}, []byte{}}
 	if err == nil {
 		if p.err = p.mount(); p.err == nil {
 			// read the userdata - we read the spec file and the fallback, but eventually
 			// will remove the fallback
 			for _, f := range userdataFiles {
-				userdata, err := ioutil.ReadFile(path.Join(p.mountPoint, f))
+				userdata, err := os.ReadFile(path.Join(p.mountPoint, f))
 				// did we find a file?
 				if err == nil && userdata != nil {
 					p.userdata = userdata
@@ -118,7 +118,7 @@ func NewCDROM(device string) *ProviderCDROM {
 				p.err = fmt.Errorf("no userdata file found at any of %v", userdataFiles)
 			}
 			// read the metadata
-			metadata, err := ioutil.ReadFile(path.Join(p.mountPoint, metadataFile))
+			metadata, err := os.ReadFile(path.Join(p.mountPoint, metadataFile))
 			// did we find a file?
 			if err == nil && metadata != nil {
 				p.metadata = metadata

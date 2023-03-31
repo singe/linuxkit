@@ -6,13 +6,14 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	namepkg "github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/validate"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/registry"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	log "github.com/sirupsen/logrus"
 )
 
 // Push push an image along with a multi-arch index.
-func (p *Provider) Push(name string) error {
+func (p *Provider) Push(name string, withManifest bool) error {
 	var (
 		err     error
 		options []remote.Option
@@ -29,16 +30,38 @@ func (p *Provider) Push(name string) error {
 		return err
 	}
 	options = append(options, remote.WithAuthFromKeychain(authn.DefaultKeychain))
+
 	img, err1 := root.Image()
 	ii, err2 := root.ImageIndex()
+	// before we even try to push, let us see if it exists remotely
+	remoteOptions := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+
 	switch {
 	case err1 == nil:
+		dig, err := img.Digest()
+		if err != nil {
+			return fmt.Errorf("could not get digest for image %s: %v", name, err)
+		}
+		desc, err := remote.Get(ref, remoteOptions...)
+		if err == nil && desc != nil && dig == desc.Digest {
+			fmt.Printf("%s image already available on remote registry, skipping push", name)
+			return nil
+		}
 		log.Debugf("pushing image %s", name)
 		if err := remote.Write(ref, img, options...); err != nil {
 			return err
 		}
 		fmt.Printf("Pushed image %s\n", name)
 	case err2 == nil:
+		dig, err := ii.Digest()
+		if err != nil {
+			return fmt.Errorf("could not get digest for index %s: %v", name, err)
+		}
+		desc, err := remote.Get(ref, remoteOptions...)
+		if err == nil && desc != nil && dig == desc.Digest {
+			fmt.Printf("%s index already available on remote registry, skipping push", name)
+			return nil
+		}
 		log.Debugf("pushing index %s", name)
 		// this is an index, so we not only want to write the index, but tags for each arch-specific image in it
 		if err := remote.WriteIndex(ref, ii, options...); err != nil {
@@ -76,6 +99,11 @@ func (p *Provider) Push(name string) error {
 					return fmt.Errorf("could not find or create arch-specific image for %s: %v", archTag, err)
 				}
 			}
+			if err := validate.Image(img); err != nil {
+				// skip arch we did not build/pull locally
+				log.Debugf("could not validate arch-specific image for %s: %v", archTag, err)
+				continue
+			}
 			log.Debugf("pushing image %s", tag)
 			if err := remote.Tag(tag, img, options...); err != nil {
 				return fmt.Errorf("error creating tag %s: %v", archTag, err)
@@ -85,15 +113,13 @@ func (p *Provider) Push(name string) error {
 		return fmt.Errorf("name %s unknown in cache", name)
 	}
 
+	if !withManifest {
+		return nil
+	}
 	// Even though we may have pushed the index, we want to be sure that we have an index that includes every architecture on the registry,
 	// not just those that were in our local cache. So we use manifest-tool library to build a broad index
-	auth, err := registry.GetDockerAuth()
-	if err != nil {
-		return fmt.Errorf("failed to get auth: %v", err)
-	}
-
 	fmt.Printf("Pushing index based on all arch-specific images in registry %s\n", name)
-	_, _, err = registry.PushManifest(name, auth)
+	_, _, err = registry.PushManifest(name)
 	if err != nil {
 		return err
 	}

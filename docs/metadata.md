@@ -63,6 +63,21 @@ This hierarchy can then be used by individual containers, who can bind
 mount the config sub-directory into their namespace where it is
 needed.
 
+## A note on SSH
+
+Supported providers will extract public keys from metadata to a file
+located at `/run/config/ssh/authorized_keys`.  You must bind this path
+into the `sshd` namespace in order to make use of these keys.  Use a
+configuration similar to the one shown below to enable root login
+based on keys from the metadata service:
+
+```
+  - name: sshd
+    image: linuxkit/sshd:4696ba61c3ec091328e1c14857d77e675802342f
+    binds.add:
+     - /run/config/ssh/authorized_keys:/root/.ssh/authorized_keys
+```
+
 # Metadata image creation
 
 `linuxkit run` backends accept two options to pass metadata to the VM in a platform specific
@@ -113,5 +128,11 @@ and made available in `/run/config/userdata`.
 ## HyperKit
 
 HyperKit does not distinguish metadata and userdata, it's simply
+refered to as data, which is passed to the VM as a disk image
+in ISO9660 format.
+
+## Virtualization.Framework
+
+Virtualization.Framework does not distinguish metadata and userdata, it's simply
 refered to as data, which is passed to the VM as a disk image
 in ISO9660 format.

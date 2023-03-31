@@ -129,7 +129,7 @@ func makeDevLinks() error {
 		}
 	}
 
-	devs, err := ioutil.ReadDir("/sys/class/block")
+	devs, err := os.ReadDir("/sys/class/block")
 	if err != nil {
 		return err
 	}
@@ -197,7 +197,7 @@ func makeDevLinks() error {
 
 // return a list of all available drives
 func findDrives() []string {
-	driveKeys := []string{}
+	var driveKeys []string
 	ignoreExp := regexp.MustCompile(`^loop.*$|^nbd.*$|^[a-z]+[0-9]+$`)
 	devs, _ := ioutil.ReadDir("/dev")
 	for _, d := range devs {

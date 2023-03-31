@@ -2,9 +2,12 @@ package moby
 
 import (
 	"crypto/sha256"
+	// fix: #3742
+	// golint requires comments on non-main(test)
+	// package for blank import
+	_ "embed"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,22 +16,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var linuxkitYaml = map[string]string{"mkimage": `
-kernel:
-  image: linuxkit/kernel:4.9.39
-  cmdline: "console=ttyS0"
-init:
-  - linuxkit/init:43c52456571369d62882605e4d510f0df3ed93de
-  - linuxkit/runc:5f9941eed05f58293f928c9f2f0b6a3f9f6f55c1
-onboot:
-  - name: mkimage
-    image: linuxkit/mkimage:fa71899c159d8c1ae63a02a22fe8db113c4e540c
-  - name: poweroff
-    image: linuxkit/poweroff:afe4b3ab865afe1e3ed5c88e58f57808f4f5119f
-trust:
-  org:
-    - linuxkit
-`}
+//go:embed mkimage.yaml
+var linuxkitYamlStr string
+var linuxkitYaml = map[string]string{"mkimage": linuxkitYamlStr}
 
 func imageFilename(name string) string {
 	yaml := linuxkitYaml[name]
@@ -59,14 +49,14 @@ func ensureLinuxkitImage(name, cache string) error {
 	}
 	// This is just a local utility used for conversion, so it does not matter what architecture we use.
 	// Might as well just use our local one.
-	m.Architecture = runtime.GOARCH
+	arch := runtime.GOARCH
 	// TODO pass through --pull to here
-	tf, err := ioutil.TempFile("", "")
+	tf, err := os.CreateTemp("", "")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(tf.Name())
-	if err := Build(m, tf, false, "", false, cache, true); err != nil {
+	if err := Build(m, tf, BuildOpts{Pull: false, BuilderType: "", DecompressKernel: false, CacheDir: cache, DockerCache: true, Arch: arch}); err != nil {
 		return err
 	}
 	if err := tf.Close(); err != nil {
@@ -86,21 +76,21 @@ func ensureLinuxkitImage(name, cache string) error {
 }
 
 func writeKernelInitrd(filename string, kernel []byte, initrd []byte, cmdline string) error {
-	err := ioutil.WriteFile(filename+"-kernel", kernel, 0600)
+	err := os.WriteFile(filename+"-kernel", kernel, 0600)
 	if err != nil {
 		return err
 	}
-	err = ioutil.WriteFile(filename+"-initrd.img", initrd, 0600)
+	err = os.WriteFile(filename+"-initrd.img", initrd, 0600)
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(filename+"-cmdline", []byte(cmdline), 0600)
+	return os.WriteFile(filename+"-cmdline", []byte(cmdline), 0600)
 }
 
 func outputLinuxKit(format string, filename string, kernel []byte, initrd []byte, cmdline string, size int) error {
 	log.Debugf("output linuxkit generated img: %s %s size %d", format, filename, size)
 
-	tmp, err := ioutil.TempDir(filepath.Join(MobyDir, "tmp"), "moby")
+	tmp, err := os.MkdirTemp(filepath.Join(MobyDir, "tmp"), "moby")
 	if err != nil {
 		return err
 	}
@@ -137,9 +127,9 @@ func outputLinuxKit(format string, filename string, kernel []byte, initrd []byte
 	}
 	commandLine := []string{
 		"-q", "run", "qemu",
-		"-disk", fmt.Sprintf("%s,size=%s,format=%s", filename, sizeString, format),
-		"-disk", fmt.Sprintf("%s,format=raw", tardisk),
-		"-kernel", imageFilename("mkimage"),
+		"--disk", fmt.Sprintf("%s,size=%s,format=%s", filename, sizeString, format),
+		"--disk", fmt.Sprintf("%s,format=raw", tardisk),
+		"--kernel", imageFilename("mkimage"),
 	}
 	log.Debugf("run %s: %v", linuxkit, commandLine)
 	cmd := exec.Command(linuxkit, commandLine...)

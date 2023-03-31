@@ -32,10 +32,10 @@ DEBUG?=
 
 ifeq ($(HASH),)
 HASH_COMMIT?=HEAD # Setting this is only really useful with the show-tag target
-HASH?=$(shell git ls-tree --full-tree $(HASH_COMMIT) -- $(CURDIR) | awk '{print $$3}')
+HASH:=$(shell git ls-tree --full-tree $(HASH_COMMIT) -- $(CURDIR) | awk '{print $$3}')
 
 ifneq ($(HASH_COMMIT),HEAD) # Others can't be dirty by definition
-DIRTY=$(shell  git update-index -q --refresh && git diff-index --quiet HEAD -- $(CURDIR) || echo "-dirty")
+DIRTY:=$(shell git update-index -q --refresh && git diff-index --quiet HEAD -- $(CURDIR) || echo "-dirty")
 endif
 endif
 
@@ -156,7 +156,7 @@ show-tags: show-tag_$(2)$(3)$(4)
 
 # Only build perf only on x86 and recent LTS and latest stable kernels
 ifeq ($(ARCH),x86_64)
-ifeq ($(2), $(filter $(2),5.12.x 5.10.x 5.4.x))
+ifeq ($(2), $(filter $(2),5.15.x 5.10.x 5.4.x))
 build_perf_$(2)$(3)$(4): build_$(2)$(3)$(4)
 	docker pull $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
 		 docker build -f Dockerfile.perf \
@@ -194,7 +194,7 @@ endif
 
 # Only build bcc only on x86 and recent LTS and latest stable kernels
 ifeq ($(ARCH),x86_64)
-ifeq ($(2), $(filter $(2),5.12.x 5.10.x 5.4.x))
+ifeq ($(2), $(filter $(2),5.15.x 5.10.x 5.4.x))
 build_bcc_$(2)$(3)$(4): build_$(2)$(3)$(4)
 	docker pull $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
 		docker build -f Dockerfile.bcc \
@@ -256,15 +256,15 @@ endef
 # Debug targets only for latest stable and LTS stable
 #
 ifeq ($(ARCH),x86_64)
-$(eval $(call kernel,5.12.14,5.12.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.10.47,5.10.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.10.47,5.10.x,,-dbg))
-$(eval $(call kernel,5.4.129,5.4.x,$(EXTRA),$(DEBUG)))
+$(eval $(call kernel,5.15.27,5.15.x,$(EXTRA),$(DEBUG)))
+$(eval $(call kernel,5.15.27,5.15.x,,-dbg))
+$(eval $(call kernel,5.10.104,5.10.x,$(EXTRA),$(DEBUG)))
+$(eval $(call kernel,5.4.172,5.4.x,$(EXTRA),$(DEBUG)))
 $(eval $(call kernel,5.11.4,5.11.x,-rt,))
 
 else ifeq ($(ARCH),$(filter $(ARCH),aarch64 arm64))
-$(eval $(call kernel,5.12.14,5.12.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.10.47,5.10.x,$(EXTRA),$(DEBUG)))
+$(eval $(call kernel,5.15.27,5.15.x,$(EXTRA),$(DEBUG)))
+$(eval $(call kernel,5.10.104,5.10.x,$(EXTRA),$(DEBUG)))
 $(eval $(call kernel,5.11.4,5.11.x,-rt,))
 
 endif

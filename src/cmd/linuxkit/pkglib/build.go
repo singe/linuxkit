@@ -2,6 +2,7 @@ package pkglib
 
 import (
 	"archive/tar"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/containerd/containerd/reference"
+	"github.com/docker/docker/api/types"
 	registry "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/cache"
 	lktspec "github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
@@ -22,24 +24,23 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const (
-	minimumDockerVersion = "19.03"
-)
-
 type buildOpts struct {
-	skipBuild     bool
-	force         bool
-	push          bool
-	release       string
-	manifest      bool
-	image         bool
-	targetDocker  bool
-	cacheDir      string
-	cacheProvider lktspec.CacheProvider
-	platforms     []imagespec.Platform
-	builders      map[string]string
-	runner        dockerRunner
-	writer        io.Writer
+	skipBuild      bool
+	force          bool
+	pull           bool
+	ignoreCache    bool
+	push           bool
+	release        string
+	manifest       bool
+	targetDocker   bool
+	cacheDir       string
+	cacheProvider  lktspec.CacheProvider
+	platforms      []imagespec.Platform
+	builders       map[string]string
+	runner         dockerRunner
+	writer         io.Writer
+	builderImage   string
+	builderRestart bool
 }
 
 // BuildOpt allows callers to specify options to Build
@@ -57,6 +58,14 @@ func WithBuildSkip() BuildOpt {
 func WithBuildForce() BuildOpt {
 	return func(bo *buildOpts) error {
 		bo.force = true
+		return nil
+	}
+}
+
+// WithBuildPull pull down the image to cache if it already exists in registry
+func WithBuildPull() BuildOpt {
+	return func(bo *buildOpts) error {
+		bo.pull = true
 		return nil
 	}
 }
@@ -89,6 +98,7 @@ func WithRelease(r string) BuildOpt {
 func WithBuildTargetDockerCache() BuildOpt {
 	return func(bo *buildOpts) error {
 		bo.targetDocker = true
+		bo.pull = true // if we are to load it into docker, it must be in local cache
 		return nil
 	}
 }
@@ -141,9 +151,34 @@ func WithBuildOutputWriter(w io.Writer) BuildOpt {
 	}
 }
 
+// WithBuildBuilderImage set the builder container image to use.
+func WithBuildBuilderImage(image string) BuildOpt {
+	return func(bo *buildOpts) error {
+		bo.builderImage = image
+		return nil
+	}
+}
+
+// WithBuildBuilderRestart restart the builder container even if it already is running with the correct image version
+func WithBuildBuilderRestart(restart bool) BuildOpt {
+	return func(bo *buildOpts) error {
+		bo.builderRestart = restart
+		return nil
+	}
+}
+
+// WithBuildIgnoreCache when building an image, do not look in local cache for dependent images
+func WithBuildIgnoreCache() BuildOpt {
+	return func(bo *buildOpts) error {
+		bo.ignoreCache = true
+		return nil
+	}
+}
+
 // Build builds the package
 func (p Pkg) Build(bos ...BuildOpt) error {
 	var bo buildOpts
+	var ctx = context.TODO()
 	for _, fn := range bos {
 		if err := fn(&bo); err != nil {
 			return err
@@ -170,20 +205,6 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 		return errors.New("must provide linuxkit build cache directory")
 	}
 
-	// if targeting docker, be sure local arch is a build target
-	if bo.targetDocker {
-		var found bool
-		for _, platform := range bo.platforms {
-			if platform.Architecture == arch {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return fmt.Errorf("must build for local platform 'linux/%s' when targeting docker", arch)
-		}
-	}
-
 	if p.git != nil && bo.push && bo.release == "" {
 		r, err := p.git.commitTag("HEAD")
 		if err != nil {
@@ -193,7 +214,7 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 	}
 
 	if bo.release != "" && !bo.push {
-		return fmt.Errorf("Cannot release %q if not pushing", bo.release)
+		return fmt.Errorf("cannot release %q if not pushing", bo.release)
 	}
 
 	d := bo.runner
@@ -209,41 +230,96 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 		}
 	}
 
-	if err := d.buildkitCheck(); err != nil {
-		return fmt.Errorf("buildkit not supported, check docker version: %v", err)
+	if err := d.contextSupportCheck(); err != nil {
+		return fmt.Errorf("contexts not supported, check docker version: %v", err)
 	}
 
-	skipBuild := bo.skipBuild
-	if !bo.force {
-		fmt.Fprintf(writer, "checking for %s in local cache, fallback to remote registry...\n", ref)
-		if _, err := c.ImagePull(&ref, "", arch, false); err == nil {
-			fmt.Fprintf(writer, "%s found or pulled\n", ref)
-			skipBuild = true
-		} else {
-			fmt.Fprintf(writer, "%s not found\n", ref)
+	var (
+		platformsToBuild []imagespec.Platform
+		// imageInLocalCache flags if we had at least one image in local cache. If we had at least one,
+		// and push was requested, we will try to push.
+		imageInLocalCache bool
+	)
+	switch {
+	case bo.force && bo.skipBuild:
+		return errors.New("cannot force build and skip build")
+	case bo.force:
+		// force local build
+		platformsToBuild = bo.platforms
+	case bo.skipBuild:
+		// do not build anything if we explicitly did skipBuild
+		platformsToBuild = nil
+	default:
+		// check local cache, fallback to check registry / pull image from registry, fallback to build
+		fmt.Fprintf(writer, "checking for %s in local cache...\n", ref)
+		for _, platform := range bo.platforms {
+			exists, err := c.ImageInCache(&ref, "", platform.Architecture)
+			switch {
+			case err == nil && exists:
+				fmt.Fprintf(writer, "found %s in local cache, skipping build\n", ref)
+				imageInLocalCache = true
+				continue
+			case bo.pull:
+				// need to pull the image from the registry, else build
+				fmt.Fprintf(writer, "%s %s not found in local cache, trying to pull\n", ref, platform.Architecture)
+				if _, err := c.ImagePull(&ref, "", platform.Architecture, false); err == nil {
+					fmt.Fprintf(writer, "%s pulled\n", ref)
+					// successfully pulled, no need to build, continue with next platform
+					continue
+				}
+				fmt.Fprintf(writer, "%s not found, will build: %s\n", ref, err)
+				platformsToBuild = append(platformsToBuild, platform)
+			default:
+				// do not pull, just check if it exists in a registry
+				fmt.Fprintf(writer, "%s %s not found in local cache, checking registry\n", ref, platform.Architecture)
+				exists, err := c.ImageInRegistry(&ref, "", platform.Architecture)
+				if err != nil {
+					return fmt.Errorf("error checking remote registry for %s: %v", ref, err)
+				}
+
+				if exists {
+					fmt.Fprintf(writer, "%s %s found on registry\n", ref, platform.Architecture)
+					continue
+				}
+				fmt.Fprintf(writer, "%s %s not found, will build\n", ref, platform.Architecture)
+				platformsToBuild = append(platformsToBuild, platform)
+			}
 		}
 	}
 
-	if !skipBuild {
-		fmt.Fprintf(writer, "building %s\n", ref)
+	if len(platformsToBuild) > 0 {
+		var arches []string
+		for _, platform := range platformsToBuild {
+			arches = append(arches, platform.Architecture)
+		}
+		fmt.Fprintf(writer, "building %s for arches: %s\n", ref, strings.Join(arches, ","))
 		var (
-			args  []string
+			imageBuildOpts = types.ImageBuildOptions{
+				Labels:    map[string]string{},
+				BuildArgs: map[string]*string{},
+			}
 			descs []registry.Descriptor
 		)
 
+		// args that we use:
+		//   labels map[string]string
+		//   network string
+		//   build-arg []string
+
 		if p.git != nil && p.gitRepo != "" {
-			args = append(args, "--label", "org.opencontainers.image.source="+p.gitRepo)
+			imageBuildOpts.Labels["org.opencontainers.image.source"] = p.gitRepo
 		}
 		if p.git != nil && !p.dirty {
 			commit, err := p.git.commitHash("HEAD")
 			if err != nil {
 				return err
 			}
-			args = append(args, "--label", "org.opencontainers.image.revision="+commit)
+			imageBuildOpts.Labels["org.opencontainers.image.revision"] = commit
 		}
 
+		imageBuildOpts.NetworkMode = "default"
 		if !p.network {
-			args = append(args, "--network=none")
+			imageBuildOpts.NetworkMode = "none"
 		}
 
 		if p.config != nil {
@@ -251,20 +327,33 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 			if err != nil {
 				return err
 			}
-			args = append(args, "--label=org.mobyproject.config="+string(b))
+			imageBuildOpts.Labels["org.mobyproject.config"] = string(b)
 		}
 
-		args = append(args, "--label=org.mobyproject.linuxkit.version="+version.Version)
-		args = append(args, "--label=org.mobyproject.linuxkit.revision="+version.GitCommit)
+		imageBuildOpts.Labels["org.mobyproject.linuxkit.version"] = version.Version
+		imageBuildOpts.Labels["org.mobyproject.linuxkit.revision"] = version.GitCommit
+
+		if p.buildArgs != nil {
+			for _, buildArg := range *p.buildArgs {
+				parts := strings.SplitN(buildArg, "=", 2)
+				if len(parts) != 2 {
+					return fmt.Errorf("invalid build-arg, must be in format 'arg=value': %s", buildArg)
+				}
+				imageBuildOpts.BuildArgs[parts[0]] = &parts[1]
+			}
+		}
 
 		// build for each arch and save in the linuxkit cache
-		for _, platform := range bo.platforms {
-			desc, err := p.buildArch(d, c, platform.Architecture, args, writer, bo)
+		for _, platform := range platformsToBuild {
+			desc, err := p.buildArch(ctx, d, c, bo.builderImage, platform.Architecture, bo.builderRestart, writer, bo, imageBuildOpts)
 			if err != nil {
 				return fmt.Errorf("error building for arch %s: %v", platform.Architecture, err)
 			}
 			if desc == nil {
 				return fmt.Errorf("no valid descriptor returned for image for arch %s", platform.Architecture)
+			}
+			if desc.Platform == nil {
+				return fmt.Errorf("descriptor for platform %v has no information on the platform: %#v", platform, desc)
 			}
 			descs = append(descs, *desc)
 		}
@@ -282,20 +371,34 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 	}
 
 	// get descriptor for root of manifest
-	desc, err := c.FindDescriptor(p.FullTag())
+	desc, err := c.FindDescriptor(&ref)
 	if err != nil {
 		return err
 	}
 
 	// if requested docker, load the image up
+	// we will store images with arch suffix, i.e. -amd64
+	// if one of the arch equals with system, we will add tag without suffix
 	if bo.targetDocker {
-		cacheSource := c.NewSource(&ref, arch, desc)
-		reader, err := cacheSource.V1TarReader()
-		if err != nil {
-			return fmt.Errorf("unable to get reader from cache: %v", err)
-		}
-		if err := d.load(reader); err != nil {
-			return err
+		for _, platform := range bo.platforms {
+			ref, err := reference.Parse(p.FullTag())
+			if err != nil {
+				return err
+			}
+			cacheSource := c.NewSource(&ref, platform.Architecture, desc)
+			reader, err := cacheSource.V1TarReader(fmt.Sprintf("%s-%s", p.FullTag(), platform.Architecture))
+			if err != nil {
+				return fmt.Errorf("unable to get reader from cache: %v", err)
+			}
+			if err := d.load(reader); err != nil {
+				return err
+			}
+			if platform.Architecture == arch {
+				err = d.tag(fmt.Sprintf("%s-%s", p.FullTag(), platform.Architecture), p.FullTag())
+				if err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -304,12 +407,38 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 		return nil
 	}
 
+	// we only will push if one of these is true:
+	// - we had at least one platform to build
+	// - we found an image in local cache
+	// if neither is true, there is nothing to push
+
+	if len(platformsToBuild) == 0 {
+		// if we did not yet find the image in local cache,
+		// check, in case we have it and would need to push.
+		// If we did not build it because we were not requested to do so,
+		// then we might not know we have it in local cache.
+		if !imageInLocalCache {
+			// we need this to know whether or not we might push
+			for _, platform := range bo.platforms {
+				exists, err := c.ImageInCache(&ref, "", platform.Architecture)
+				if err == nil && exists {
+					imageInLocalCache = true
+					break
+				}
+			}
+		}
+		if !imageInLocalCache {
+			fmt.Fprintf(writer, "No new platforms to push, skipping.\n")
+			return nil
+		}
+	}
+
 	if p.dirty {
 		return fmt.Errorf("build complete, refusing to push dirty package")
 	}
 
 	// push the manifest
-	if err := c.Push(p.FullTag()); err != nil {
+	if err := c.Push(p.FullTag(), bo.manifest); err != nil {
 		return err
 	}
 
@@ -331,14 +460,23 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 	if _, err := c.DescriptorWrite(&ref, *desc); err != nil {
 		return err
 	}
-	if err := c.Push(fullRelTag); err != nil {
+	if err := c.Push(fullRelTag, bo.manifest); err != nil {
 		return err
 	}
 
 	// tag in docker, if requested
+	// will tag all images with arch suffix
+	// if one of the arch equals with system will add tag without suffix
 	if bo.targetDocker {
-		if err := d.tag(p.FullTag(), fullRelTag); err != nil {
-			return err
+		for _, platform := range bo.platforms {
+			if err := d.tag(fmt.Sprintf("%s-%s", p.FullTag(), platform.Architecture), fmt.Sprintf("%s-%s", fullRelTag, platform.Architecture)); err != nil {
+				return err
+			}
+			if platform.Architecture == arch {
+				if err := d.tag(fmt.Sprintf("%s-%s", p.FullTag(), platform.Architecture), fullRelTag); err != nil {
+					return err
+				}
+			}
 		}
 	}
 
@@ -348,7 +486,7 @@ func (p Pkg) Build(bos ...BuildOpt) error {
 }
 
 // buildArch builds the package for a single arch
-func (p Pkg) buildArch(d dockerRunner, c lktspec.CacheProvider, arch string, args []string, writer io.Writer, bo buildOpts) (*registry.Descriptor, error) {
+func (p Pkg) buildArch(ctx context.Context, d dockerRunner, c lktspec.CacheProvider, builderImage, arch string, restart bool, writer io.Writer, bo buildOpts, imageBuildOpts types.ImageBuildOptions) (*registry.Descriptor, error) {
 	var (
 		desc    *registry.Descriptor
 		tagArch string
@@ -364,7 +502,7 @@ func (p Pkg) buildArch(d dockerRunner, c lktspec.CacheProvider, arch string, arg
 		}
 		if _, err := c.ImagePull(&ref, "", arch, false); err == nil {
 			fmt.Fprintf(writer, "image already found %s for arch %s", ref, arch)
-			desc, err := c.FindDescriptor(ref.String())
+			desc, err := c.FindDescriptor(&ref)
 			if err != nil {
 				return nil, fmt.Errorf("could not find root descriptor for %s: %v", ref, err)
 			}
@@ -382,7 +520,6 @@ func (p Pkg) buildArch(d dockerRunner, c lktspec.CacheProvider, arch string, arg
 
 	// set the target
 	var (
-		buildxOutput string
 		stdout       io.WriteCloser
 		eg           errgroup.Group
 		stdoutCloser = func() {
@@ -397,7 +534,6 @@ func (p Pkg) buildArch(d dockerRunner, c lktspec.CacheProvider, arch string, arg
 	}
 
 	// we are writing to local, so we need to catch the tar output stream and place the right files in the right place
-	buildxOutput = "type=oci"
 	piper, pipew := io.Pipe()
 	stdout = pipew
 
@@ -412,13 +548,15 @@ func (p Pkg) buildArch(d dockerRunner, c lktspec.CacheProvider, arch string, arg
 		piper.Close()
 		return err
 	})
-	args = append(args, fmt.Sprintf("--output=%s", buildxOutput))
 
 	buildCtx := &buildCtx{sources: p.sources}
 	platform := fmt.Sprintf("linux/%s", arch)
-	archArgs := append(args, "--platform")
-	archArgs = append(archArgs, platform)
-	if err := d.build(tagArch, p.path, builderName, platform, buildCtx.Reader(), stdout, archArgs...); err != nil {
+	// if we were told to ignore cached dependent images, pass it a nil cache so it cannot read anything
+	passCache := c
+	if bo.ignoreCache {
+		passCache = nil
+	}
+	if err := d.build(ctx, tagArch, p.path, builderName, builderImage, platform, restart, passCache, buildCtx.Reader(), stdout, imageBuildOpts); err != nil {
 		stdoutCloser()
 		if strings.Contains(err.Error(), "executor failed running [/dev/.buildkit_qemu_emulator") {
 			return nil, fmt.Errorf("buildkit was unable to emulate %s. check binfmt has been set up and works for this platform: %v", platform, err)
@@ -443,7 +581,7 @@ type buildCtx struct {
 
 // Reader gets an io.Reader by iterating over the sources, tarring up the content after rewriting the paths.
 // It assumes that sources is sane, ie is well formed and the first part is an absolute path
-// and that it exists. NewFromCLI() ensures that.
+// and that it exists.
 func (c *buildCtx) Reader() io.ReadCloser {
 	r, w := io.Pipe()
 	tw := tar.NewWriter(w)

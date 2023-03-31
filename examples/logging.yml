@@ -1,23 +1,23 @@
 # Simple example of using an external logging service
 kernel:
-  image: linuxkit/kernel:5.10.47
+  image: linuxkit/kernel:5.10.104
   cmdline: "console=tty0 console=ttyS0 console=ttyAMA0"
 init:
-  - linuxkit/init:43c52456571369d62882605e4d510f0df3ed93de
-  - linuxkit/runc:5f9941eed05f58293f928c9f2f0b6a3f9f6f55c1
-  - linuxkit/containerd:b991571dd383351dbb2873f9ae3b70475adb6816
-  - linuxkit/ca-certificates:4df823737c9bf6a9564b736f1a19fd25d60e909a
-  - linuxkit/memlogd:9b0e8a5b3f67672234170d88833163caf7898984
+  - linuxkit/init:14df799bb3b9e0eb0491da9fda7f32a108a2e2a5
+  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
+  - linuxkit/containerd:eeb3aaf497c0b3f6c67f3a245d61ea5a568ca718
+  - linuxkit/ca-certificates:4de36e93dc87f7ccebd20db616ed10d381911d32
+  - linuxkit/memlogd:67e3bc9d0f271336567f4bffbb80a8d57d5eddba
 onboot:
   - name: sysctl
-    image: linuxkit/sysctl:02d2bd74509fd063857ceb4c4f502f09ee4f2e0a
+    image: linuxkit/sysctl:e5959517fab7b44692ad63941eecf37486e73799
   - name: dhcpcd
-    image: linuxkit/dhcpcd:1033f340e2d42f86a60aab70752346f0045ea388
+    image: linuxkit/dhcpcd:2a8ed08fea442909ba10f950d458191ed3647115
     command: ["/sbin/dhcpcd", "--nobackground", "-f", "/dhcpcd.conf", "-1"]
 services:
 # Inside the getty type `/proc/1/root/usr/bin/logread -F` to follow the log
   - name: getty
-    image: linuxkit/getty:ebe3397aa9b08e8f310121fdb0aac9406e1c8e73
+    image: linuxkit/getty:06f34bce0facea79161566d67345c3ea49965437
     env:
      - INSECURE=true
 # A service which generates log messages for testing
@@ -25,6 +25,6 @@ services:
     image: alpine:3.13
     command: ["/bin/sh", "-c", "while /bin/true; do echo hello $(date); sleep 1; done" ]
   - name: write-and-rotate-logs
-    image: linuxkit/logwrite:e64e0f06e485e3542b58f3517da3bc13f246d208
+    image: linuxkit/logwrite:f3ba46a1785036931bd156996659e967b594bb83
   - name: kmsg
-    image: linuxkit/kmsg:fa82d93cab0c1efa178cc51ffb82b83cc011148e
+    image: linuxkit/kmsg:d86e8b0b44a01195f5ca644adb25994a24703f0f

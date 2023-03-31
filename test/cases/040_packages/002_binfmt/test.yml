@@ -1,12 +1,12 @@
 kernel:
-  image: linuxkit/kernel:5.10.47
+  image: linuxkit/kernel:5.10.104
   cmdline: "console=ttyS0 console=ttyAMA0"
 init:
-  - linuxkit/init:43c52456571369d62882605e4d510f0df3ed93de
-  - linuxkit/runc:5f9941eed05f58293f928c9f2f0b6a3f9f6f55c1
+  - linuxkit/init:14df799bb3b9e0eb0491da9fda7f32a108a2e2a5
+  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
 onboot:
   - name: binfmt
-    image: linuxkit/binfmt:5567917e7de481e4867d31c7490a0ebdb70e04a5
+    image: linuxkit/binfmt:ecd24b710cad869af6a4716809f62d7164286367
   - name: test
     image: alpine:3.13
     binds:
@@ -14,7 +14,7 @@ onboot:
       - /proc/sys/fs/binfmt_misc:/binfmt_misc
     command: ["sh", "./check.sh"]
   - name: poweroff
-    image: linuxkit/poweroff:afe4b3ab865afe1e3ed5c88e58f57808f4f5119f
+    image: linuxkit/poweroff:992d9c7531166fe071d945e8b2728d8b61eb8d5a
     command: ["/bin/sh", "/poweroff.sh", "10"]
 files:
   - path: check.sh

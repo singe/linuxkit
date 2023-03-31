@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +46,7 @@ type Interface struct {
 
 func getRuntimeConfig(path string) Runtime {
 	var runtime Runtime
-	conf, err := ioutil.ReadFile(filepath.Join(path, "runtime.json"))
+	conf, err := os.ReadFile(filepath.Join(path, "runtime.json"))
 	if err != nil {
 		// if it does not exist it is fine to return an empty runtime, to not do anything
 		if os.IsNotExist(err) {
@@ -119,10 +118,22 @@ func parseMountOptions(options []string) (int, string) {
 	return flag, strings.Join(data, ",")
 }
 
-// newCgroup creates a cgroup (ie directory) under all directories in /sys/fs/cgroup
+// newCgroup creates a cgroup (ie directory)
 // we could use github.com/containerd/cgroups but it has a lot of deps and this is just a sugary mkdir
 func newCgroup(cgroup string) error {
-	dirs, err := ioutil.ReadDir("/sys/fs/cgroup")
+	v2, err := isCgroupV2()
+	if err != nil {
+		return err
+	}
+	if v2 {
+		// a cgroupv2 cgroup is a single directory
+		if err := os.MkdirAll(filepath.Join("/sys/fs/cgroup", cgroup), 0755); err != nil {
+			log.Printf("cgroup error: %v", err)
+		}
+		return nil
+	}
+	// a cgroupv1 cgroup is a directory under all directories in /sys/fs/cgroup
+	dirs, err := os.ReadDir("/sys/fs/cgroup")
 	if err != nil {
 		return err
 	}
@@ -137,6 +148,17 @@ func newCgroup(cgroup string) error {
 	}
 
 	return nil
+}
+
+func isCgroupV2() (bool, error) {
+	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // prepareFilesystem sets up the mounts and cgroups, before the container is created
@@ -254,7 +276,7 @@ func prepareProcess(pid int, runtime Runtime) error {
 			default:
 				// no special creation options needed
 				la := netlink.LinkAttrs{Name: iface.Name, Namespace: ns}
-				link = &netlink.GenericLink{la, iface.Add}
+				link = &netlink.GenericLink{LinkAttrs: la, LinkType: iface.Add}
 			}
 			if err := netlink.LinkAdd(link); err != nil {
 				return fmt.Errorf("Link add %s of type %s failed: %v", iface.Name, iface.Add, err)
@@ -270,7 +292,7 @@ func prepareProcess(pid int, runtime Runtime) error {
 			move = true
 		}
 		if move {
-			if err := netlink.LinkSetNsPid(link, int(pid)); err != nil {
+			if err := netlink.LinkSetNsPid(link, pid); err != nil {
 				return fmt.Errorf("Cannot move interface %s into namespace: %v", iface.Name, err)
 			}
 			fmt.Fprintf(os.Stderr, "Moved interface %s to pid %d\n", iface.Name, pid)

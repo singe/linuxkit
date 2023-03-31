@@ -18,13 +18,12 @@ import (
 
 // Moby is the type of a Moby config file
 type Moby struct {
-	Kernel       KernelConfig `kernel:"cmdline,omitempty" json:"kernel,omitempty"`
-	Init         []string     `init:"cmdline" json:"init"`
-	Onboot       []*Image     `yaml:"onboot" json:"onboot"`
-	Onshutdown   []*Image     `yaml:"onshutdown" json:"onshutdown"`
-	Services     []*Image     `yaml:"services" json:"services"`
-	Files        []File       `yaml:"files" json:"files"`
-	Architecture string
+	Kernel     KernelConfig `kernel:"cmdline,omitempty" json:"kernel,omitempty"`
+	Init       []string     `init:"cmdline" json:"init"`
+	Onboot     []*Image     `yaml:"onboot" json:"onboot"`
+	Onshutdown []*Image     `yaml:"onshutdown" json:"onshutdown"`
+	Services   []*Image     `yaml:"services" json:"services"`
+	Files      []File       `yaml:"files" json:"files"`
 
 	initRefs []*reference.Spec
 }
@@ -311,7 +310,6 @@ func AppendConfig(m0, m1 Moby) (Moby, error) {
 	moby.Services = append(moby.Services, m1.Services...)
 	moby.Files = append(moby.Files, m1.Files...)
 	moby.initRefs = append(moby.initRefs, m1.initRefs...)
-	moby.Architecture = m1.Architecture
 
 	return moby, uniqueServices(moby)
 }
@@ -488,7 +486,7 @@ func mergeStrings(v1, v2 *[]string) *[]string {
 		return v2
 	}
 	// merge the two uniquely
-	ret := []string{}
+	var ret []string
 	m := make(map[string]bool)
 	for _, s := range *v1 {
 		if m[s] {
@@ -747,6 +745,9 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	// default options match what Docker does
 	procOptions := []string{"nosuid", "nodev", "noexec", "relatime"}
 	devOptions := []string{"nosuid", "strictatime", "mode=755", "size=65536k"}
+	if readonly {
+		devOptions = append(devOptions, "ro")
+	}
 	ptsOptions := []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}
 	sysOptions := []string{"nosuid", "noexec", "nodev"}
 	if readonly {
@@ -767,7 +768,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 			return oci, runtime, fmt.Errorf("Cannot parse tmpfs, too many ':': %s", t)
 		}
 		dest := parts[0]
-		opts := []string{}
+		var opts []string
 		if len(parts) == 2 {
 			opts = strings.Split(parts[1], ",")
 		}
@@ -829,7 +830,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 		return mountList[i].Destination < mountList[j].Destination
 	})
 
-	namespaces := []specs.LinuxNamespace{}
+	var namespaces []specs.LinuxNamespace
 
 	// net, ipc, and uts namespaces: default to not creating a new namespace (usually host namespace)
 	netNS := assignStringEmpty3("root", label.Net, yaml.Net)
@@ -913,7 +914,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 		}
 		boundingSet[capability] = true
 	}
-	bounding := []string{}
+	var bounding []string
 	for capability := range boundingSet {
 		bounding = append(bounding, capability)
 	}
@@ -921,7 +922,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	sort.Strings(bounding)
 
 	rlimitsString := assignStrings(label.Rlimits, yaml.Rlimits)
-	rlimits := []specs.POSIXRlimit{}
+	var rlimits []specs.POSIXRlimit
 	for _, limitString := range rlimitsString {
 		rs := strings.SplitN(limitString, ",", 3)
 		var limit string
@@ -992,7 +993,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	if err != nil {
 		return oci, runtime, err
 	}
-	additionalGroups := []uint32{}
+	var additionalGroups []uint32
 	for _, id := range agIf {
 		ag, err := idNumeric(id, idMap)
 		if err != nil {

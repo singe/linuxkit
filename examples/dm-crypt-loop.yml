@@ -1,31 +1,31 @@
 kernel:
-  image: linuxkit/kernel:5.10.47
+  image: linuxkit/kernel:5.10.104
   cmdline: "console=tty0 console=ttyS0"
 init:
-  - linuxkit/init:43c52456571369d62882605e4d510f0df3ed93de
-  - linuxkit/runc:5f9941eed05f58293f928c9f2f0b6a3f9f6f55c1
-  - linuxkit/containerd:b991571dd383351dbb2873f9ae3b70475adb6816
-  - linuxkit/ca-certificates:4df823737c9bf6a9564b736f1a19fd25d60e909a
+  - linuxkit/init:14df799bb3b9e0eb0491da9fda7f32a108a2e2a5
+  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
+  - linuxkit/containerd:eeb3aaf497c0b3f6c67f3a245d61ea5a568ca718
+  - linuxkit/ca-certificates:4de36e93dc87f7ccebd20db616ed10d381911d32
 onboot:
   - name: sysctl
-    image: linuxkit/sysctl:02d2bd74509fd063857ceb4c4f502f09ee4f2e0a
+    image: linuxkit/sysctl:e5959517fab7b44692ad63941eecf37486e73799
   - name: dhcpcd
-    image: linuxkit/dhcpcd:1033f340e2d42f86a60aab70752346f0045ea388
+    image: linuxkit/dhcpcd:2a8ed08fea442909ba10f950d458191ed3647115
     command: ["/sbin/dhcpcd", "--nobackground", "-f", "/dhcpcd.conf", "-1"]
   - name: format
-    image: linuxkit/format:cf335053c7d0b4cd8cc2d136e9392ea5904a71dc
+    image: linuxkit/format:9c40b556691c1bf47394603aeb2dbdba21e7e32e
     command: ["/usr/bin/format", "/dev/sda"]
   - name: mount
-    image: linuxkit/mount:a9a5f731261891bd880e108e6fa2be5bac2f63ba
+    image: linuxkit/mount:a8581e454f846690d09e2e7c6287d3c84ca53257
     command: ["/usr/bin/mountie", "/dev/sda1", "/var/external"]
   - name: loop
-    image: linuxkit/losetup:bd8b9d59785e9be62f8374c359c0736ad33744d4
+    image: linuxkit/losetup:fcee8e453684d45c3c411fe8c28ecb2210158638
     command: ["/usr/bin/loopy", "--create", "/var/external/storage_file"]
   - name: dm-crypt
-    image: linuxkit/dm-crypt:313085c3279e5c64ef3777973a139f30e4a48306
+    image: linuxkit/dm-crypt:526d32351c8246431be8e1a168cb514ff3c365af
     command: ["/usr/bin/crypto", "crypt_loop_dev", "/dev/loop0"]
   - name: mount
-    image: linuxkit/mount:a9a5f731261891bd880e108e6fa2be5bac2f63ba
+    image: linuxkit/mount:a8581e454f846690d09e2e7c6287d3c84ca53257
     command: ["/usr/bin/mountie", "/dev/mapper/crypt_loop_dev", "/var/secure_storage"]
   - name: bbox
     image: busybox
@@ -34,11 +34,11 @@ onboot:
       - /var:/var
 services:
   - name: getty
-    image: linuxkit/getty:ebe3397aa9b08e8f310121fdb0aac9406e1c8e73
+    image: linuxkit/getty:06f34bce0facea79161566d67345c3ea49965437
     env:
      - INSECURE=true
   - name: rngd
-    image: linuxkit/rngd:bdabfe138f05f7d48396d2f435af16f5a6ccaa45
+    image: linuxkit/rngd:331294919ba6d953d261a2694019b659a98535a4
 files:
   - path: etc/dm-crypt/key
     # the below key is just to keep the example self-contained

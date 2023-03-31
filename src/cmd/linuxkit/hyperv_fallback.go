@@ -1,3 +1,4 @@
+//go:build !windows
 // +build !windows
 
 package main
@@ -8,10 +9,12 @@ import (
 	"log"
 )
 
+//nolint:unused
 func hypervStartConsole(vmName string) error {
 	log.Fatalf("This function should not be called")
 	return nil
 }
 
+//nolint:unused
 func hypervRestoreConsole() {
 }

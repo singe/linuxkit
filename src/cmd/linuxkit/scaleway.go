@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -20,7 +19,7 @@ import (
 	"github.com/scaleway/scaleway-sdk-go/scw"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 )
 
 var (
@@ -46,8 +45,7 @@ type ScalewayClient struct {
 func NewScalewayClient(accessKey, secretKey, zone, organizationID string) (*ScalewayClient, error) {
 	log.Debugf("Connecting to Scaleway")
 
-	scwOptions := []scw.ClientOption{}
-
+	var scwOptions []scw.ClientOption
 	if accessKey == "" || secretKey == "" {
 		config, err := scw.LoadConfig()
 		if err != nil {
@@ -279,14 +277,14 @@ func getSSHAuth(sshKeyPath string) (ssh.Signer, error) {
 	}
 	defer f.Close()
 
-	buf, err := ioutil.ReadAll(f)
+	buf, err := io.ReadAll(f)
 	if err != nil {
 		return nil, err
 	}
 	signer, err := ssh.ParsePrivateKey(buf)
 	if err != nil {
 		fmt.Print("Enter ssh key passphrase: ")
-		bytePassword, err := terminal.ReadPassword(int(syscall.Stdin))
+		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 		// ReadPassword eats newline, put it back to avoid mangling logs
 		fmt.Println()
 		if err != nil {
@@ -345,7 +343,7 @@ func (s *ScalewayClient) CopyImageToInstance(instanceID, path, sshKeyPath string
 	defer f.Close()
 
 	// code taken from bramvdbogaerde/go-scp
-	contentBytes, err := ioutil.ReadAll(f)
+	contentBytes, err := io.ReadAll(f)
 	if err != nil {
 		return err
 	}
@@ -360,11 +358,11 @@ func (s *ScalewayClient) CopyImageToInstance(instanceID, path, sshKeyPath string
 		}
 		defer w.Close()
 		fmt.Fprintln(w, "C0600", int64(len(contentBytes)), base)
-		io.Copy(w, bytesReader)
+		_, _ = io.Copy(w, bytesReader)
 		fmt.Fprintln(w, "\x00")
 	}()
 
-	session.Run("/usr/bin/scp -t /root/") // TODO remove hardcoded remote path?
+	_ = session.Run("/usr/bin/scp -t /root/") // TODO remove hardcoded remote path?
 	return err
 }
 

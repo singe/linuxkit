@@ -1,32 +1,34 @@
-FROM linuxkit/alpine:0c069d0fd7defddb6e03925fcd4915407db0c9e1 AS build
+FROM linuxkit/containerd-dev:30c6ccebe92d8af06596fb33b71ec005859116cc AS containerd-dev
+FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS build
 RUN apk add --no-cache --initdb alpine-baselayout make gcc musl-dev git linux-headers
 
 ADD usermode-helper.c ./
 RUN LDFLAGS=-static CFLAGS=-Werror make usermode-helper
 
 RUN apk add --no-cache go musl-dev
-ENV GOPATH=/go PATH=$PATH:/go/bin GO111MODULE=off
+ENV GOPATH=/go PATH=$PATH:/go/bin
 # Hack to work around an issue with go on arm64 requiring gcc
 RUN [ $(uname -m) = aarch64 ] && apk add --no-cache gcc || true
 
-COPY cmd /go/src/cmd
+COPY . /go/src
 RUN go-compile.sh /go/src/cmd/init
 RUN go-compile.sh /go/src/cmd/rc.init
 # this makes sure that the multi stage build copies as a symlink
 RUN mkdir /tmp/bin && cd /tmp/bin/ && cp /go/bin/rc.init . && ln -s rc.init rc.shutdown
 
+COPY --from=containerd-dev /go/src/github.com/containerd/containerd $GOPATH/src/github.com/containerd/containerd
 RUN cd /go/src/cmd/service && ./skanky-vendor.sh $GOPATH/src/github.com/containerd/containerd
 RUN go-compile.sh /go/src/cmd/service
 
-FROM linuxkit/alpine:0c069d0fd7defddb6e03925fcd4915407db0c9e1 AS mirror
+FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS mirror
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 RUN apk add --no-cache --initdb -p /out alpine-baselayout busybox musl
 
 # Add /etc/ssl/certs so it can be bind-mounted into metadata package
 RUN mkdir -p /out/etc/ssl/certs
 
-# Remove apk residuals. We have a read-only rootfs, so apk is of no use.
-RUN rm -rf /out/etc/apk /out/lib/apk /out/var/cache
+# Remove cache residuals. We retain apk for SBOM tools
+RUN rm -rf /out/var/cache
 
 FROM scratch
 ENTRYPOINT []

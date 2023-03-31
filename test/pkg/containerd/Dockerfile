@@ -1,4 +1,5 @@
-FROM linuxkit/alpine:12f0af976c42d4125a3ff3f5e636c95c0a7caa2a AS mirror
+FROM linuxkit/containerd-dev:30c6ccebe92d8af06596fb33b71ec005859116cc as containerd-dev
+FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS mirror
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 # btrfs-progfs is required for btrfs test (mkfs.btrfs)
 # util-linux is required for btrfs test (losetup)
@@ -23,7 +24,7 @@ RUN cp /out/usr/share/zoneinfo/UTC /out/etc/localtime
 
 FROM scratch
 COPY --from=mirror /out/ /
-COPY --from=mirror /go/src/github.com/containerd/containerd /go/src/github.com/containerd/containerd/
+COPY --from=containerd-dev /go/src/github.com/containerd/containerd /go/src/github.com/containerd/containerd/
 
 # containerd 1.4.x does not support go modules; remove GO111MODULE=off when we switch to 1.5.x
 ENV GOPATH=/go GO111MODULE=off

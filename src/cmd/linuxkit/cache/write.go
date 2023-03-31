@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"strings"
 
 	"github.com/containerd/containerd/reference"
+	"github.com/estesp/manifest-tool/v2/pkg/util"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
-	"github.com/google/go-containerregistry/pkg/v1"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
 	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
@@ -28,9 +28,14 @@ const (
 	linux = "linux"
 )
 
-// ImagePull takes an image name and pulls it down, writing it locally. It should be
-// efficient and only write missing blobs, based on their content hash. If the ref already
-// exists in the cache, it will niot pull anything, unless alwaysPull is set to true.
+// ImagePull takes an image name and ensures that the image manifest or index to which it refers
+// exists in local cache and, if not, pulls it from the registry and writes it locally. It should be
+// efficient and only write missing blobs, based on their content hash.
+// It will only pull the actual blobs, config and manifest for the requested architectures, even if ref
+// points to an index with multiple architectures. If the ref and all of the content for the requested
+// architectures already exist in the cache, it will not pull anything, unless alwaysPull is set to true.
+// If you call it multiple times, even with different architectures, the ref will continue to point to the same index.
+// Only the underlying content will be added.
 func (p *Provider) ImagePull(ref *reference.Spec, trustedRef, architecture string, alwaysPull bool) (lktspec.ImageSource, error) {
 	image := ref.String()
 	pullImageName := image
@@ -44,12 +49,12 @@ func (p *Provider) ImagePull(ref *reference.Spec, trustedRef, architecture strin
 	if !alwaysPull {
 		imgSrc, err := p.ValidateImage(ref, architecture)
 		if err == nil && imgSrc != nil {
-			log.Printf("Image %s found in local cache, not pulling", image)
+			log.Printf("Image %s arch %s found in local cache, not pulling", image, architecture)
 			return imgSrc, nil
 		}
 		// there was an error, so try to pull
 	}
-	log.Printf("Image %s not found in local cache, pulling", image)
+	log.Printf("Image %s arch %s not found in local cache, pulling", image, architecture)
 	remoteRef, err := name.ParseReference(pullImageName)
 	if err != nil {
 		return ImageSource{}, fmt.Errorf("invalid image name %s: %v", pullImageName, err)
@@ -69,7 +74,28 @@ func (p *Provider) ImagePull(ref *reference.Spec, trustedRef, architecture strin
 	ii, err := desc.ImageIndex()
 	if err == nil {
 		log.Debugf("ImageWrite retrieved %s is index, saving", pullImageName)
-		err = p.cache.ReplaceIndex(ii, match.Name(image), layout.WithAnnotations(annotations))
+		im, err := ii.IndexManifest()
+		if err != nil {
+			return ImageSource{}, fmt.Errorf("unable to get IndexManifest: %v", err)
+		}
+		// write the index blob and the descriptor
+		if err := p.cache.WriteBlob(desc.Digest, io.NopCloser(bytes.NewReader(desc.Manifest))); err != nil {
+			return ImageSource{}, fmt.Errorf("unable to write index content to cache: %v", err)
+		}
+		if _, err := p.DescriptorWrite(ref, desc.Descriptor); err != nil {
+			return ImageSource{}, fmt.Errorf("unable to write index descriptor to cache: %v", err)
+		}
+		for _, m := range im.Manifests {
+			if m.MediaType.IsImage() && (m.Platform == nil || m.Platform.Architecture == architecture) {
+				img, err := ii.Image(m.Digest)
+				if err != nil {
+					return ImageSource{}, fmt.Errorf("unable to get image: %v", err)
+				}
+				if err := p.cache.WriteImage(img); err != nil {
+					return ImageSource{}, fmt.Errorf("unable to write image: %v", err)
+				}
+			}
+		}
 	} else {
 		var im v1.Image
 		// try an image
@@ -94,13 +120,10 @@ func (p *Provider) ImageLoad(ref *reference.Spec, architecture string, r io.Read
 		tr    = tar.NewReader(r)
 		index bytes.Buffer
 	)
-	var suffix string
-	switch architecture {
-	case "amd64", "arm64", "s390x":
-		suffix = "-" + architecture
-	default:
-		return ImageSource{}, fmt.Errorf("Unknown arch %q", architecture)
+	if !util.IsValidOSArch(linux, architecture, "") {
+		return ImageSource{}, fmt.Errorf("unknown arch %s", architecture)
 	}
+	suffix := "-" + architecture
 	imageName := ref.String() + suffix
 	log.Debugf("ImageWriteTar to cache %s", imageName)
 	for {
@@ -146,7 +169,7 @@ func (p *Provider) ImageLoad(ref *reference.Spec, architecture string, r io.Read
 				return ImageSource{}, fmt.Errorf("invalid hash filename for %s: %v", filename, err)
 			}
 			log.Debugf("writing %s as hash %s", filename, hash)
-			if err := p.cache.WriteBlob(hash, ioutil.NopCloser(tr)); err != nil {
+			if err := p.cache.WriteBlob(hash, io.NopCloser(tr)); err != nil {
 				return ImageSource{}, fmt.Errorf("error reading data for file %s : %v", filename, err)
 			}
 		}
@@ -200,6 +223,9 @@ func (p *Provider) ImageLoad(ref *reference.Spec, architecture string, r io.Read
 func (p *Provider) IndexWrite(ref *reference.Spec, descriptors ...v1.Descriptor) (lktspec.ImageSource, error) {
 	image := ref.String()
 	log.Debugf("writing an index for %s", image)
+	if len(descriptors) < 1 {
+		return ImageSource{}, errors.New("cannot create index without any manifests")
+	}
 
 	ii, err := p.cache.ImageIndex()
 	if err != nil {
@@ -276,7 +302,7 @@ func (p *Provider) IndexWrite(ref *reference.Spec, descriptors ...v1.Descriptor)
 	if err != nil {
 		return ImageSource{}, fmt.Errorf("error calculating hash of index json: %v", err)
 	}
-	if err := p.cache.WriteBlob(hash, ioutil.NopCloser(bytes.NewReader(b))); err != nil {
+	if err := p.cache.WriteBlob(hash, io.NopCloser(bytes.NewReader(b))); err != nil {
 		return ImageSource{}, fmt.Errorf("error writing new index to json: %v", err)
 	}
 	// finally update the descriptor in the root
@@ -329,4 +355,92 @@ func (p *Provider) DescriptorWrite(ref *reference.Spec, desc v1.Descriptor) (lkt
 		"",
 		&desc,
 	), nil
+}
+
+func (p *Provider) ImageInCache(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
+	img, err := p.findImage(ref.String(), architecture)
+	if err != nil {
+		return false, err
+	}
+	// findImage only checks if we had the pointer to it; it does not check if it is complete.
+	// We need to do that next.
+
+	// check that all of the layers exist
+	layers, err := img.Layers()
+	if err != nil {
+		return false, fmt.Errorf("layers not found: %v", err)
+	}
+	for _, layer := range layers {
+		dig, err := layer.Digest()
+		if err != nil {
+			return false, fmt.Errorf("unable to get digest of layer: %v", err)
+		}
+		var rc io.ReadCloser
+		if rc, err = p.cache.Blob(dig); err != nil {
+			return false, fmt.Errorf("layer %s not found: %v", dig, err)
+		}
+		rc.Close()
+	}
+	// check that the config exists
+	config, err := img.ConfigName()
+	if err != nil {
+		return false, fmt.Errorf("unable to get config: %v", err)
+	}
+	var rc io.ReadCloser
+	if rc, err = p.cache.Blob(config); err != nil {
+		return false, fmt.Errorf("config %s not found: %v", config, err)
+	}
+	rc.Close()
+	return true, nil
+}
+
+// ImageInRegistry takes an image name and checks that the image manifest or index to which it refers
+// exists in the registry.
+func (p *Provider) ImageInRegistry(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
+	image := ref.String()
+	remoteOptions := []remote.Option{remote.WithAuthFromKeychain(authn.DefaultKeychain)}
+	log.Debugf("Checking image %s in registry", image)
+
+	remoteRef, err := name.ParseReference(image)
+	if err != nil {
+		return false, fmt.Errorf("invalid image name %s: %v", image, err)
+	}
+
+	desc, err := remote.Get(remoteRef, remoteOptions...)
+	if err != nil {
+		log.Debugf("Retrieving image %s returned an error, ignoring: %v", image, err)
+		return false, nil
+	}
+	// first attempt as an index
+	ii, err := desc.ImageIndex()
+	if err == nil {
+		log.Debugf("ImageExists retrieved %s as index", remoteRef)
+		im, err := ii.IndexManifest()
+		if err != nil {
+			return false, fmt.Errorf("unable to get IndexManifest: %v", err)
+		}
+		for _, m := range im.Manifests {
+			if m.MediaType.IsImage() && (m.Platform == nil || m.Platform.Architecture == architecture) {
+				return true, nil
+			}
+		}
+		// we went through all of the manifests and did not find one that matches the target architecture
+	} else {
+		var im v1.Image
+		// try an image
+		im, err = desc.Image()
+		if err != nil {
+			return false, fmt.Errorf("provided image is neither an image nor an index: %s", image)
+		}
+		log.Debugf("ImageExists retrieved %s as image", remoteRef)
+		conf, err := im.ConfigFile()
+		if err != nil {
+			return false, fmt.Errorf("unable to get ConfigFile: %v", err)
+		}
+		if conf.Architecture == architecture {
+			return true, nil
+		}
+		// the image had the wrong architecture
+	}
+	return false, nil
 }

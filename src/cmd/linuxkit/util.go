@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +14,10 @@ type multipleFlag []string
 
 func (f *multipleFlag) String() string {
 	return "A multiple flag is a type of flag that can be repeated any number of times"
+}
+
+func (f *multipleFlag) Type() string {
+	return "[]string"
 }
 
 func (f *multipleFlag) Set(value string) error {
@@ -114,9 +117,38 @@ func stringToIntArray(l string, sep string) ([]int, error) {
 	return i, nil
 }
 
+// handle string with built-in default, overridden by env var, overridden by CLI flag
+type flagOverEnvVarOverDefaultString struct {
+	value  string
+	def    string
+	envVar string
+}
+
+func (f *flagOverEnvVarOverDefaultString) String() string {
+	val := f.def
+	if f.envVar != "" {
+		if e := os.Getenv(f.envVar); e != "" {
+			val = e
+		}
+	}
+	if f.value != "" {
+		val = f.value
+	}
+	return val
+}
+
+func (f *flagOverEnvVarOverDefaultString) Set(value string) error {
+	f.value = value
+	return nil
+}
+
+func (f *flagOverEnvVarOverDefaultString) Type() string {
+	return "string"
+}
+
 // Convert a multi-line string into an array of strings
 func splitLines(in string) []string {
-	res := []string{}
+	var res []string
 
 	s := bufio.NewScanner(strings.NewReader(in))
 	for s.Scan() {
@@ -173,6 +205,10 @@ type Disks []DiskConfig
 
 func (l *Disks) String() string {
 	return fmt.Sprint(*l)
+}
+
+func (l *Disks) Type() string {
+	return "[]DiskConfig"
 }
 
 // Set is used by flag to configure value from CLI
@@ -269,7 +305,7 @@ func CreateMetadataISO(state, data string, dataPath string) ([]string, error) {
 		d = []byte(data)
 	case dataPath != "":
 		var err error
-		d, err = ioutil.ReadFile(dataPath)
+		d, err = os.ReadFile(dataPath)
 		if err != nil {
 			return nil, fmt.Errorf("Cannot read user data from path %s: %v", dataPath, err)
 		}

@@ -1,26 +1,26 @@
 kernel:
-  image: linuxkit/kernel:5.10.47
+  image: linuxkit/kernel:5.10.104
   cmdline: "console=ttyS0"
 init:
-  - linuxkit/init:43c52456571369d62882605e4d510f0df3ed93de
-  - linuxkit/runc:5f9941eed05f58293f928c9f2f0b6a3f9f6f55c1
-  - linuxkit/containerd:b991571dd383351dbb2873f9ae3b70475adb6816
-  - linuxkit/ca-certificates:4df823737c9bf6a9564b736f1a19fd25d60e909a
+  - linuxkit/init:14df799bb3b9e0eb0491da9fda7f32a108a2e2a5
+  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
+  - linuxkit/containerd:eeb3aaf497c0b3f6c67f3a245d61ea5a568ca718
+  - linuxkit/ca-certificates:4de36e93dc87f7ccebd20db616ed10d381911d32
 onboot:
   - name: sysctl
-    image: linuxkit/sysctl:02d2bd74509fd063857ceb4c4f502f09ee4f2e0a
+    image: linuxkit/sysctl:e5959517fab7b44692ad63941eecf37486e73799
   - name: sysfs
-    image: linuxkit/sysfs:3498aa99c90a29439b5a1926f6ffcd75c270372c
+    image: linuxkit/sysfs:4f58a2447d328d391143984fc4e8508b00dc6e5b
   - name: format
-    image: linuxkit/format:cf335053c7d0b4cd8cc2d136e9392ea5904a71dc
+    image: linuxkit/format:9c40b556691c1bf47394603aeb2dbdba21e7e32e
   - name: mount
-    image: linuxkit/mount:a9a5f731261891bd880e108e6fa2be5bac2f63ba
+    image: linuxkit/mount:a8581e454f846690d09e2e7c6287d3c84ca53257
     command: ["/usr/bin/mountie", "/var/lib/docker"]
 services:
   - name: rngd
-    image: linuxkit/rngd:bdabfe138f05f7d48396d2f435af16f5a6ccaa45
+    image: linuxkit/rngd:331294919ba6d953d261a2694019b659a98535a4
   - name: dhcpcd
-    image: linuxkit/dhcpcd:1033f340e2d42f86a60aab70752346f0045ea388
+    image: linuxkit/dhcpcd:2a8ed08fea442909ba10f950d458191ed3647115
   - name: docker
     image: docker:20.10.6-dind
     capabilities:
@@ -34,7 +34,7 @@ services:
      - /run:/var/run
     command: ["/usr/local/bin/docker-init", "/usr/local/bin/dockerd"]
   - name: test-docker-bench
-    image: linuxkit/test-docker-bench:91113a35ceba0b82d4eceeeb57723a7685ec2c47
+    image: linuxkit/test-docker-bench:3b801c257ab3736361bbfb7c4c8ae3ddcfc797f7
     ipc: host
     pid: host
     net: host

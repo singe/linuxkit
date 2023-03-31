@@ -3,10 +3,13 @@ package pkglib
 // Thin wrappers around git CLI invocations
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -83,6 +86,49 @@ func (g git) isWorkTree(pkg string) (bool, error) {
 	return false, fmt.Errorf("unexpected output from git rev-parse --is-inside-work-tree: %s", tf)
 }
 
+func (g git) contentHash() (string, error) {
+	hash := sha256.New()
+	// list of files tracked by git that might have changed
+	trackedFiles, err := g.commandStdout(nil, "ls-files")
+	if err != nil {
+		return "", err
+	}
+	untrackedFiles, err := g.commandStdout(nil, "ls-files", "--exclude-standard", "--others")
+	if err != nil {
+		return "", err
+	}
+	allFiles := strings.Join([]string{trackedFiles, untrackedFiles}, "\n")
+	scanner := bufio.NewScanner(strings.NewReader(strings.TrimSpace(allFiles)))
+	for scanner.Scan() {
+		filename := filepath.Join(g.dir, scanner.Text())
+		info, err := os.Lstat(filename)
+		if err != nil {
+			log.Debugf("cannot stat %s: %s, skipped", filename, err)
+			continue
+		}
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			// we do not want to calculate hash of directory or symlinks
+			continue
+		}
+		f, err := os.Open(filename)
+		if err != nil {
+			log.Debugf("cannot open %s: %s, skipped", filename, err)
+			continue
+		}
+		if _, err := io.Copy(hash, f); err != nil {
+			_ = f.Close()
+			return "", err
+		}
+		if err = f.Close(); err != nil {
+			return "", err
+		}
+	}
+	if err = scanner.Err(); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
 func (g git) treeHash(pkg, commit string) (string, error) {
 	// we have to check if pkg is at the top level of the git tree,
 	// if that's the case we need to use tree hash from the commit itself
@@ -148,9 +194,14 @@ func (g git) isDirty(pkg, commit string) (bool, error) {
 		return false, err
 	}
 
+	// diff-index works pretty well, except that
 	err := g.command("diff-index", "--quiet", commit, "--", pkg)
 	if err == nil {
-		return false, nil
+		// this returns an error if there are *no* untracked files, which is strange, but we can work with it
+		if _, err := g.commandStdout(nil, "ls-files", "--exclude-standard", "--others", "--error-unmatch", "--", pkg); err != nil {
+			return false, nil
+		}
+		return true, nil
 	}
 	switch err.(type) {
 	case *exec.ExitError:

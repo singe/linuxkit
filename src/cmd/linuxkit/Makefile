@@ -1,6 +1,6 @@
 VERSION?="v0.0-dev"
 GIT_COMMIT=$(shell git rev-list -1 HEAD)
-GO_COMPILE?=linuxkit/go-compile:7b1f5a37d2a93cd4a9aa2a87db264d8145944006
+GO_COMPILE?=linuxkit/go-compile:c97703655e8510b7257ffc57f25e40337b0f0813
 export GO_FLAGS=-mod=vendor
 
 ifeq ($(OS),Windows_NT)
@@ -25,10 +25,16 @@ default: $(LINUXKIT)
 all: default
 
 LINUXKIT_DEPS=$(wildcard *.go) $(wildcard */*.go) Makefile
+
+
+ifeq ($(GOOS),darwin)
+$(LINUXKIT): local-build sign | bin
+else
 $(LINUXKIT): tmp_linuxkit_bin.tar | bin
 	tar -C $(dir $(LINUXKIT)) -xf $<
 	rm $<
 	touch $@
+endif
 
 tmp_linuxkit_bin.tar: $(LINUXKIT_DEPS)
 	tar cf - -C . . | docker run --rm --net=none --log-driver=none -i $(CROSS) $(GO_COMPILE) --package github.com/linuxkit/linuxkit/src/cmd/linuxkit --ldflags "-X github.com/linuxkit/linuxkit/src/cmd/linuxkit/version.GitCommit=$(GIT_COMMIT) -X github.com/linuxkit/linuxkit/src/cmd/linuxkit/version.Version=$(VERSION)" -o $(notdir $(LINUXKIT)) > $@
@@ -54,6 +60,12 @@ ifeq ($(STATIC), 1)
 	CGO_ENABLED=0
 endif
 
+# darwin needs CGO to build for virtualization framework
+# without CGO attempt to use virtualization framework will ends with error
+ifeq ($(GOOS), darwin)
+	CGO_ENABLED=1
+endif
+
 ifeq ($(PIE), 1)
 	CGO_ENABLED=0
 	BUILD_FLAGS+= --buildmode pie
@@ -66,7 +78,7 @@ LOCAL_TARGET ?= $(LINUXKIT)
 local-check: $(LINUXKIT_DEPS)
 	@echo gofmt... && o=$$(gofmt -s -l $(filter %.go,$(LINUXKIT_DEPS))) && if [ -n "$$o" ] ; then echo $$o ; exit 1 ; fi
 	@echo govet... && go vet -printf=false ./...
-	@echo golint... && set -e ; for i in $(filter %.go,$(LINUXKIT_DEPS)); do golint $$i ; done
+	@echo golangci-lint... && golangci-lint run ./...
 	@echo ineffassign... && ineffassign ./...
 
 local-build:
@@ -80,6 +92,9 @@ local: local-check local-build local-test
 
 bin:
 	mkdir -p $@
+
+sign:
+	codesign --entitlements linuxkit.entitlements --force -s - $(LOCAL_TARGET)
 
 install:
 	cp -R ./bin/* $(PREFIX)/bin

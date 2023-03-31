@@ -2,11 +2,9 @@ package moby
 
 import (
 	"archive/tar"
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"path"
 	"sort"
 	"strings"
@@ -172,7 +170,7 @@ func tarPrefix(path string, tw tarWriter) error {
 }
 
 // ImageTar takes a Docker image and outputs it to a tar stream
-func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resolv, cacheDir string, dockerCache bool, architecture string) (e error) {
+func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, resolv string, opts BuildOpts) (e error) {
 	log.Debugf("image tar: %s %s", ref, prefix)
 	if prefix != "" && prefix[len(prefix)-1] != '/' {
 		return fmt.Errorf("prefix does not end with /: %s", prefix)
@@ -185,7 +183,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 
 	// pullImage first checks in the cache, then pulls the image.
 	// If pull==true, then it always tries to pull from registry.
-	src, err := imagePull(ref, pull, cacheDir, dockerCache, architecture)
+	src, err := imagePull(ref, opts.Pull, opts.CacheDir, opts.DockerCache, opts.Arch)
 	if err != nil {
 		return fmt.Errorf("Could not pull image %s: %v", ref, err)
 	}
@@ -218,7 +216,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 		hdr.Format = tar.FormatPAX
 		if exclude[hdr.Name] {
 			log.Debugf("image tar: %s %s exclude %s", ref, prefix, hdr.Name)
-			_, err = io.Copy(ioutil.Discard, tr)
+			_, err = io.Copy(io.Discard, tr)
 			if err != nil {
 				return err
 			}
@@ -232,8 +230,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 				if err := tw.WriteHeader(hdr); err != nil {
 					return err
 				}
-				buf := bytes.NewBufferString(contents)
-				_, err = io.Copy(tw, buf)
+				_, err = tw.Write([]byte(contents))
 				if err != nil {
 					return err
 				}
@@ -249,7 +246,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 					return err
 				}
 			}
-			_, err = io.Copy(ioutil.Discard, tr)
+			_, err = io.Copy(io.Discard, tr)
 			if err != nil {
 				return err
 			}
@@ -308,8 +305,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 			return err
 		}
 		if hdr.Size > 0 {
-			buf := bytes.NewBufferString(contents)
-			if _, err = io.Copy(tw, buf); err != nil {
+			if _, err = tw.Write([]byte(contents)); err != nil {
 				return err
 			}
 		}
@@ -318,7 +314,7 @@ func ImageTar(ref *reference.Spec, prefix string, tw tarWriter, pull bool, resol
 }
 
 // ImageBundle produces an OCI bundle at the given path in a tarball, given an image and a config.json
-func ImageBundle(prefix string, ref *reference.Spec, config []byte, runtime Runtime, tw tarWriter, pull bool, readonly bool, dupMap map[string]string, cacheDir string, dockerCache bool, architecture string) error { // nolint: lll
+func ImageBundle(prefix string, ref *reference.Spec, config []byte, runtime Runtime, tw tarWriter, readonly bool, dupMap map[string]string, opts BuildOpts) error { // nolint: lll
 	// if read only, just unpack in rootfs/ but otherwise set up for overlay
 	rootExtract := "rootfs"
 	if !readonly {
@@ -329,7 +325,7 @@ func ImageBundle(prefix string, ref *reference.Spec, config []byte, runtime Runt
 	root := path.Join(prefix, rootExtract)
 	var foundElsewhere = dupMap[ref.String()] != ""
 	if !foundElsewhere {
-		if err := ImageTar(ref, root+"/", tw, pull, "", cacheDir, dockerCache, architecture); err != nil {
+		if err := ImageTar(ref, root+"/", tw, "", opts); err != nil {
 			return err
 		}
 		dupMap[ref.String()] = root
@@ -350,8 +346,7 @@ func ImageBundle(prefix string, ref *reference.Spec, config []byte, runtime Runt
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
-	buf := bytes.NewBuffer(config)
-	if _, err := io.Copy(tw, buf); err != nil {
+	if _, err := tw.Write(config); err != nil {
 		return err
 	}
 
@@ -427,8 +422,7 @@ func ImageBundle(prefix string, ref *reference.Spec, config []byte, runtime Runt
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
-	buf = bytes.NewBuffer(runtimeConfig)
-	if _, err := io.Copy(tw, buf); err != nil {
+	if _, err := tw.Write(runtimeConfig); err != nil {
 		return err
 	}
 

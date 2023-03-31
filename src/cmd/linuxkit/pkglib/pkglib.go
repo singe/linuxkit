@@ -2,9 +2,7 @@ package pkglib
 
 import (
 	"crypto/sha1"
-	"flag"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,6 +24,7 @@ type pkgInfo struct {
 	Network      bool              `yaml:"network"`
 	DisableCache bool              `yaml:"disable-cache"`
 	Config       *moby.ImageConfig `yaml:"config"`
+	BuildArgs    *[]string         `yaml:"buildArgs,omitempty"`
 	Depends      struct {
 		DockerImages struct {
 			TargetDir string   `yaml:"target-dir"`
@@ -34,6 +33,32 @@ type pkgInfo struct {
 			List      []string `yaml:"list"`
 		} `yaml:"docker-images"`
 	} `yaml:"depends"`
+}
+
+// PkglibConfig contains the configuration for the pkglib package.
+// It is used to override the default behaviour of the package.
+// Fields that are pointers are so that the caller can leave it as nil
+// for "use whatever default pkglib has", while non-nil means "explicitly override".
+type PkglibConfig struct {
+	DisableCache *bool
+	Network      *bool
+	Org          *string
+	BuildYML     string
+	Hash         string
+	HashCommit   string
+	HashPath     string
+	Dirty        bool
+	Dev          bool
+}
+
+func NewPkgInfo() pkgInfo {
+	return pkgInfo{
+		Org:          "linuxkit",
+		Arches:       []string{"amd64", "arm64"},
+		GitRepo:      "https://github.com/linuxkit/linuxkit",
+		Network:      false,
+		DisableCache: false,
+	}
 }
 
 // Specifies the source directory for a package and their destination in the build context.
@@ -54,6 +79,7 @@ type Pkg struct {
 	trust         bool
 	cache         bool
 	config        *moby.ImageConfig
+	buildArgs     *[]string
 	dockerDepends dockerDepends
 
 	// Internal state
@@ -64,16 +90,10 @@ type Pkg struct {
 	git        *git
 }
 
-// NewFromCLI creates a range of Pkg from a set of CLI arguments. Calls fs.Parse()
-func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
+// NewFromConfig creates a range of Pkg from a PkglibConfig and paths to packages.
+func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 	// Defaults
-	piBase := pkgInfo{
-		Org:          "linuxkit",
-		Arches:       []string{"amd64", "arm64", "s390x"},
-		GitRepo:      "https://github.com/linuxkit/linuxkit",
-		Network:      false,
-		DisableCache: false,
-	}
+	piBase := NewPkgInfo()
 
 	// TODO(ijc) look for "$(git rev-parse --show-toplevel)/.build-defaults.yml"?
 
@@ -82,45 +102,23 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 
 	// These override fields in pi below, bools are in both forms to allow user overrides in either direction.
 	// These will apply to all packages built.
-	argDisableCache := fs.Bool("disable-cache", piBase.DisableCache, "Disable build cache")
-	argEnableCache := fs.Bool("enable-cache", !piBase.DisableCache, "Enable build cache")
-	argNoNetwork := fs.Bool("nonetwork", !piBase.Network, "Disallow network use during build")
-	argNetwork := fs.Bool("network", piBase.Network, "Allow network use during build")
-
-	argOrg := fs.String("org", piBase.Org, "Override the hub org")
-
 	// Other arguments
-	var buildYML, hash, hashCommit, hashPath string
-	var dirty, devMode bool
-
-	fs.StringVar(&buildYML, "build-yml", "build.yml", "Override the name of the yml file")
-	fs.StringVar(&hash, "hash", "", "Override the image hash (default is to query git for the package's tree-sh)")
-	fs.StringVar(&hashCommit, "hash-commit", "HEAD", "Override the git commit to use for the hash")
-	fs.StringVar(&hashPath, "hash-path", "", "Override the directory to use for the image hash, must be a parent of the package dir (default is to use the package dir)")
-	fs.BoolVar(&dirty, "force-dirty", false, "Force the pkg(s) to be considered dirty")
-	fs.BoolVar(&devMode, "dev", false, "Force org and hash to $USER and \"dev\" respectively")
-
-	_ = fs.Parse(args)
-
-	if fs.NArg() < 1 {
-		return nil, fmt.Errorf("At least one pkg directory is required")
-	}
 
 	var pkgs []Pkg
-	for _, pkg := range fs.Args() {
+	for _, pkg := range args {
 		var (
 			pkgHashPath string
-			pkgHash     = hash
+			pkgHash     = cfg.Hash
 		)
 		pkgPath, err := filepath.Abs(pkg)
 		if err != nil {
 			return nil, err
 		}
 
-		if hashPath == "" {
+		if cfg.HashPath == "" {
 			pkgHashPath = pkgPath
 		} else {
-			pkgHashPath, err = filepath.Abs(hashPath)
+			pkgHashPath, err = filepath.Abs(cfg.HashPath)
 			if err != nil {
 				return nil, err
 			}
@@ -142,7 +140,7 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 			return nil, err
 		}
 
-		b, err := ioutil.ReadFile(filepath.Join(pkgPath, buildYML))
+		b, err := os.ReadFile(filepath.Join(pkgPath, cfg.BuildYML))
 		if err != nil {
 			return nil, err
 		}
@@ -160,7 +158,7 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 			return nil, err
 		}
 
-		if devMode {
+		if cfg.Dev {
 			// If --org is also used then this will be overwritten
 			// by argOrg when we iterate over the provided options
 			// in the fs.Visit block below.
@@ -174,21 +172,15 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 		// apart from Visit which iterates over only those which were
 		// set. This must be run here, rather than earlier, because we need to
 		// have read it from the build.yml file first, then override based on CLI.
-		fs.Visit(func(f *flag.Flag) {
-			switch f.Name {
-			case "disable-cache":
-				pi.DisableCache = *argDisableCache
-			case "enable-cache":
-				pi.DisableCache = !*argEnableCache
-			case "network":
-				pi.Network = *argNetwork
-			case "nonetwork":
-				pi.Network = !*argNoNetwork
-			case "org":
-				pi.Org = *argOrg
-			}
-		})
-
+		if cfg.DisableCache != nil {
+			pi.DisableCache = *cfg.DisableCache
+		}
+		if cfg.Network != nil {
+			pi.Network = *cfg.Network
+		}
+		if cfg.Org != nil {
+			pi.Org = *cfg.Org
+		}
 		var srcHashes string
 		sources := []pkgSource{{src: pkgPath, dst: "/"}}
 
@@ -211,7 +203,7 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 			if g == nil {
 				return nil, fmt.Errorf("Source %s not in a git repository", srcPath)
 			}
-			h, err := g.treeHash(srcPath, hashCommit)
+			h, err := g.treeHash(srcPath, cfg.HashCommit)
 			if err != nil {
 				return nil, err
 			}
@@ -225,16 +217,17 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 			return nil, err
 		}
 
+		var dirty bool
 		if git != nil {
-			gitDirty, err := git.isDirty(pkgHashPath, hashCommit)
+			gitDirty, err := git.isDirty(pkgHashPath, cfg.HashCommit)
 			if err != nil {
 				return nil, err
 			}
 
-			dirty = dirty || gitDirty
+			dirty = cfg.Dirty || gitDirty
 
 			if pkgHash == "" {
-				if pkgHash, err = git.treeHash(pkgHashPath, hashCommit); err != nil {
+				if pkgHash, err = git.treeHash(pkgHashPath, cfg.HashCommit); err != nil {
 					return nil, err
 				}
 
@@ -244,7 +237,15 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 				}
 
 				if dirty {
-					pkgHash += "-dirty"
+					contentHash, err := git.contentHash()
+					if err != nil {
+						return nil, err
+					}
+					if len(contentHash) < 7 {
+						return nil, fmt.Errorf("unexpected hash len: %d", len(contentHash))
+					}
+					// construct <ls-tree>-dirty-<content hash> tag
+					pkgHash += fmt.Sprintf("-dirty-%s", contentHash[0:7])
 				}
 			}
 		}
@@ -253,13 +254,14 @@ func NewFromCLI(fs *flag.FlagSet, args ...string) ([]Pkg, error) {
 			image:         pi.Image,
 			org:           pi.Org,
 			hash:          pkgHash,
-			commitHash:    hashCommit,
+			commitHash:    cfg.HashCommit,
 			arches:        pi.Arches,
 			sources:       sources,
 			gitRepo:       pi.GitRepo,
 			network:       pi.Network,
 			cache:         !pi.DisableCache,
 			config:        pi.Config,
+			buildArgs:     pi.BuildArgs,
 			dockerDepends: dockerDepends,
 			dirty:         dirty,
 			path:          pkgPath,
@@ -310,6 +312,7 @@ func (p Pkg) Arches() []string {
 	return p.arches
 }
 
+//nolint:unused // will be used when linuxkit cache is eliminated and we return to docker image cache
 func (p Pkg) archSupported(want string) bool {
 	for _, supp := range p.arches {
 		if supp == want {
@@ -345,7 +348,7 @@ func makeAbsSubpath(field, base, path string) (string, error) {
 		return "", fmt.Errorf("%s must not be exactly the package directory", field)
 	}
 
-	if !filepath.HasPrefix(p, base) {
+	if !strings.HasPrefix(p, base) {
 		return "", fmt.Errorf("%s must be within package directory", field)
 	}
 

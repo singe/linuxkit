@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/csv"
-	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
@@ -26,8 +25,7 @@ const (
 )
 
 var (
-	rliminf  = unix.RLIM_INFINITY
-	infinity = uint64(rliminf)
+	infinity = uint64(unix.RLIM_INFINITY)
 )
 
 // set as a subreaper
@@ -82,7 +80,7 @@ func mkdir(path string, perm os.FileMode) {
 
 // list of all enabled cgroups
 func cgroupList() []string {
-	list := []string{}
+	var list []string
 	f, err := os.Open("/proc/cgroups")
 	if err != nil {
 		log.Printf("cannot open /proc/cgroups: %v", err)
@@ -110,7 +108,7 @@ func cgroupList() []string {
 
 // write a file, eg sysfs
 func write(path string, value string) {
-	err := ioutil.WriteFile(path, []byte(value), 0600)
+	err := os.WriteFile(path, []byte(value), 0600)
 	if err != nil {
 		log.Printf("cannot write to %s: %v", path, err)
 	}
@@ -118,7 +116,7 @@ func write(path string, value string) {
 
 // read a file, eg sysfs, strip whitespace, empty string if does not exist
 func read(path string) string {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -127,8 +125,8 @@ func read(path string) string {
 
 // read a directory
 func readdir(path string) []string {
-	names := []string{}
-	files, err := ioutil.ReadDir(path)
+	var names []string
+	files, err := os.ReadDir(path)
 	if err != nil {
 		log.Printf("cannot read directory %s: %v", path, err)
 		return names

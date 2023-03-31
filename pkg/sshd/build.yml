@@ -2,7 +2,6 @@ image: sshd
 config:
   pid: host
   binds:
-    - /root/.ssh:/root/.ssh
     - /etc/resolv.conf:/etc/resolv.conf
     - /run:/run
     - /tmp:/tmp
@@ -16,3 +15,6 @@ config:
     - /sys:/sys
   capabilities:
     - all
+  devices:
+    - path: all
+      type: a

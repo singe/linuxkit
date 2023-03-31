@@ -1,4 +1,5 @@
 abuild
+acpid
 alpine-baselayout
 alpine-keys
 apk-tools
@@ -18,7 +19,6 @@ bsd-compat-headers
 btrfs-progs
 btrfs-progs-dev
 build-base
-busybox-initscripts
 ca-certificates
 cdrkit
 cifs-utils
@@ -42,13 +42,13 @@ expect
 findutils
 flex
 flex-dev
-fts-dev
 gcc
 gettext
 gettext-dev
 git
 gmp-dev
 gnupg
+go
 grep
 hvtools
 installkernel
@@ -83,6 +83,7 @@ mpfr-dev
 mtools
 multipath-tools
 musl-dev
+musl-fts-dev
 ncurses-dev
 nfs-utils
 open-iscsi
@@ -95,7 +96,6 @@ openssl
 openssl-dev
 patch
 pigz
-python2
 python3
 qemu-aarch64
 qemu-arm

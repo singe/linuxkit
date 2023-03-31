@@ -2,25 +2,29 @@ package pkglib
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
-	"runtime"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/reference"
+	dockertypes "github.com/docker/docker/api/types"
 	registry "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
 	lktspec "github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
+	buildkitClient "github.com/moby/buildkit/client"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 type dockerMocker struct {
-	supportBuildKit bool
+	supportContexts bool
 	images          map[string][]byte
 	enableTag       bool
 	enableBuild     bool
@@ -34,15 +38,8 @@ type buildLog struct {
 	pkg           string
 	dockerContext string
 	platform      string
-	opts          []string
 }
 
-func (d *dockerMocker) buildkitCheck() error {
-	if d.supportBuildKit {
-		return nil
-	}
-	return errors.New("buildkit unsupported")
-}
 func (d *dockerMocker) tag(ref, tag string) error {
 	if !d.enableTag {
 		return errors.New("tags not allowed")
@@ -50,11 +47,20 @@ func (d *dockerMocker) tag(ref, tag string) error {
 	d.images[tag] = d.images[ref]
 	return nil
 }
-func (d *dockerMocker) build(tag, pkg, dockerContext, platform string, stdin io.Reader, stdout io.Writer, opts ...string) error {
+func (d *dockerMocker) contextSupportCheck() error {
+	if d.supportContexts {
+		return nil
+	}
+	return errors.New("contexts not supported")
+}
+func (d *dockerMocker) builder(_ context.Context, _, _, _ string, _ bool) (*buildkitClient.Client, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (d *dockerMocker) build(ctx context.Context, tag, pkg, dockerContext, builderImage, platform string, builderRestart bool, c spec.CacheProvider, r io.Reader, stdout io.Writer, imageBuildOpts dockertypes.ImageBuildOptions) error {
 	if !d.enableBuild {
 		return errors.New("build disabled")
 	}
-	d.builds = append(d.builds, buildLog{tag, pkg, dockerContext, platform, opts})
+	d.builds = append(d.builds, buildLog{tag, pkg, dockerContext, platform})
 	return nil
 }
 func (d *dockerMocker) save(tgt string, refs ...string) error {
@@ -66,10 +72,10 @@ func (d *dockerMocker) save(tgt string, refs ...string) error {
 		}
 		return fmt.Errorf("do not have image %s", ref)
 	}
-	return ioutil.WriteFile(tgt, b, 0666)
+	return os.WriteFile(tgt, b, 0666)
 }
 func (d *dockerMocker) load(src io.Reader) error {
-	b, err := ioutil.ReadAll(src)
+	b, err := io.ReadAll(src)
 	if err != nil {
 		return err
 	}
@@ -106,6 +112,24 @@ func (c *cacheMocker) ImagePull(ref *reference.Spec, trustedRef, architecture st
 	return c.imageWriteStream(ref, architecture, bytes.NewReader(b))
 }
 
+func (c *cacheMocker) ImageInCache(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
+	image := ref.String()
+	desc, ok := c.images[image]
+	if !ok {
+		return false, nil
+	}
+	for _, d := range desc {
+		if d.Platform != nil && d.Platform.Architecture == architecture {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (c *cacheMocker) ImageInRegistry(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
+	return false, nil
+}
+
 func (c *cacheMocker) ImageLoad(ref *reference.Spec, architecture string, r io.Reader) (lktspec.ImageSource, error) {
 	if !c.enableImageLoad {
 		return nil, errors.New("ImageLoad disabled")
@@ -114,10 +138,10 @@ func (c *cacheMocker) ImageLoad(ref *reference.Spec, architecture string, r io.R
 }
 
 func (c *cacheMocker) imageWriteStream(ref *reference.Spec, architecture string, r io.Reader) (lktspec.ImageSource, error) {
-	image := ref.String()
+	image := fmt.Sprintf("%s-%s", ref.String(), architecture)
 
 	// make some random data for a layer
-	b, err := ioutil.ReadAll(r)
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("error reading data: %v", err)
 	}
@@ -152,10 +176,14 @@ func (c *cacheMocker) imageWriteStream(ref *reference.Spec, architecture string,
 		Annotations: map[string]string{
 			imagespec.AnnotationRefName: image,
 		},
+		Platform: &registry.Platform{
+			OS:           "linux",
+			Architecture: architecture,
+		},
 	}
 	c.appendImage(image, desc)
 
-	return c.NewSource(ref, "", &desc), nil
+	return c.NewSource(ref, architecture, &desc), nil
 }
 
 func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...registry.Descriptor) (lktspec.ImageSource, error) {
@@ -191,7 +219,7 @@ func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...registry.De
 
 	return c.NewSource(ref, "", &desc), nil
 }
-func (c *cacheMocker) Push(name string) error {
+func (c *cacheMocker) Push(name string, withManifest bool) error {
 	if !c.enablePush {
 		return errors.New("push disabled")
 	}
@@ -235,7 +263,8 @@ func (c *cacheMocker) DescriptorWrite(ref *reference.Spec, desc registry.Descrip
 
 	return c.NewSource(ref, "", &root), nil
 }
-func (c *cacheMocker) FindDescriptor(name string) (*registry.Descriptor, error) {
+func (c *cacheMocker) FindDescriptor(ref *reference.Spec) (*registry.Descriptor, error) {
+	name := ref.String()
 	if desc, ok := c.images[name]; ok && len(desc) > 0 {
 		return &desc[0], nil
 	}
@@ -257,6 +286,11 @@ func (c *cacheMocker) appendImage(image string, root registry.Descriptor) {
 	c.images[image] = append(c.images[image], root)
 }
 
+// Store get content.Store referencing the cache
+func (c *cacheMocker) Store() (content.Store, error) {
+	return nil, errors.New("unsupported")
+}
+
 type cacheMockerSource struct {
 	c            *cacheMocker
 	ref          *reference.Spec
@@ -270,8 +304,14 @@ func (c cacheMockerSource) Config() (imagespec.ImageConfig, error) {
 func (c cacheMockerSource) TarReader() (io.ReadCloser, error) {
 	return nil, errors.New("unsupported")
 }
-func (c cacheMockerSource) V1TarReader() (io.ReadCloser, error) {
-	return nil, errors.New("unsupported")
+func (c cacheMockerSource) V1TarReader(overrideName string) (io.ReadCloser, error) {
+	_, found := c.c.images[c.ref.String()]
+	if !found {
+		return nil, fmt.Errorf("no image found with ref: %s", c.ref.String())
+	}
+	b := make([]byte, 256)
+	rand.Read(b)
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 func (c cacheMockerSource) Descriptor() *registry.Descriptor {
 	return c.descriptor
@@ -279,14 +319,8 @@ func (c cacheMockerSource) Descriptor() *registry.Descriptor {
 
 func TestBuild(t *testing.T) {
 	var (
-		nonLocal string
 		cacheDir = "somecachedir"
 	)
-	if runtime.GOARCH == "amd64" {
-		nonLocal = "arm64"
-	} else {
-		nonLocal = "amd64"
-	}
 	tests := []struct {
 		msg     string
 		p       Pkg
@@ -297,17 +331,17 @@ func TestBuild(t *testing.T) {
 		err     string
 	}{
 		{"invalid tag", Pkg{image: "docker.io/foo/bar:abc:def:ghi"}, nil, nil, &dockerMocker{}, &cacheMocker{}, "could not resolve references"},
-		{"not at head", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "foo"}, nil, []string{"amd64"}, &dockerMocker{supportBuildKit: false}, &cacheMocker{}, "Cannot build from commit hash != HEAD"},
-		{"no build cache", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, nil, []string{"amd64"}, &dockerMocker{supportBuildKit: false}, &cacheMocker{}, "must provide linuxkit build cache"},
-		{"unsupported buildkit", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportBuildKit: false}, &cacheMocker{}, "buildkit not supported, check docker version"},
-		{"load docker without local platform", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir), WithBuildTargetDockerCache()}, []string{nonLocal}, &dockerMocker{supportBuildKit: false}, &cacheMocker{}, "must build for local platform"},
-		{"amd64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportBuildKit: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
-		{"arm64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"arm64"}, &dockerMocker{supportBuildKit: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
-		{"amd64 and arm64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64", "arm64"}, &dockerMocker{supportBuildKit: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
+		{"not at head", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "foo"}, nil, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "Cannot build from commit hash != HEAD"},
+		{"no build cache", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, nil, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "must provide linuxkit build cache"},
+		{"unsupported contexts", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "contexts not supported, check docker version"},
+		{"load docker without local platform", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir), WithBuildTargetDockerCache()}, []string{"amd64", "arm64"}, &dockerMocker{supportContexts: true, enableBuild: true, images: map[string][]byte{}, enableTag: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
+		{"amd64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportContexts: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
+		{"arm64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"arm64"}, &dockerMocker{supportContexts: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
+		{"amd64 and arm64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64", "arm64"}, &dockerMocker{supportContexts: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.msg, func(t *testing.T) {
-			opts := append(tt.options, WithBuildDocker(tt.runner), WithBuildCacheProvider(tt.cache), WithBuildOutputWriter(ioutil.Discard))
+			opts := append(tt.options, WithBuildDocker(tt.runner), WithBuildCacheProvider(tt.cache), WithBuildOutputWriter(io.Discard))
 			// build our build options
 			if len(tt.targets) > 0 {
 				var targets []imagespec.Platform
@@ -324,7 +358,12 @@ func TestBuild(t *testing.T) {
 				// need to make sure that it was called the correct number of times with the correct arguments
 				t.Errorf("mismatched call to runners, should be %d was %d: %#v", len(tt.targets), len(tt.runner.builds), tt.runner.builds)
 			case tt.err == "":
-				// check that all of our platforms were called
+				// check that all of our platforms were called exactly once each
+				// we do that by:
+				// 1- creating a map of all of the target platforms and setting them to `false`
+				// 2- checking with each build for which platform it was called
+				//
+				// each build is assumed to track what platform it built
 				platformMap := map[string]bool{}
 				for _, arch := range tt.targets {
 					platformMap[fmt.Sprintf("linux/%s", arch)] = false
@@ -334,6 +373,11 @@ func TestBuild(t *testing.T) {
 						t.Errorf("mismatch in build: '%v', %#v", err, build)
 					}
 				}
+				for k, v := range platformMap {
+					if !v {
+						t.Errorf("did not execute build for platform: %s", k)
+					}
+				}
 			}
 		})
 	}
@@ -341,23 +385,14 @@ func TestBuild(t *testing.T) {
 
 // testCheckBuildRun check the output of a build run
 func testCheckBuildRun(build buildLog, platforms map[string]bool) error {
-	for i, arg := range build.opts {
-		switch {
-		case arg == "--platform", arg == "-platform":
-			if i+1 >= len(build.opts) {
-				return errors.New("provided arg --platform with no next argument")
-			}
-			platform := build.opts[i+1]
-			used, ok := platforms[platform]
-			if !ok {
-				return fmt.Errorf("requested unknown platform: %s", platform)
-			}
-			if used {
-				return fmt.Errorf("tried to use platform twice: %s", platform)
-			}
-			platforms[platform] = true
-			return nil
-		}
+	platform := build.platform
+	used, ok := platforms[platform]
+	if !ok {
+		return fmt.Errorf("requested unknown platform: %s", platform)
 	}
-	return errors.New("missing platform argument")
+	if used {
+		return fmt.Errorf("tried to use platform twice: %s", platform)
+	}
+	platforms[platform] = true
+	return nil
 }
