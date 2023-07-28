@@ -1,4 +1,4 @@
-name: LinuxKit CI
+name: LinuxKit Kernel Builder
 on: [push, pull_request]
 
 env:
@@ -54,8 +54,8 @@ jobs:
         make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
 
     - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: true
-          tags: singelet/linuxkit:$KERNEL_SERIES-${{matrix.targetarch}}-${{matrix.target.os}}$EXTRA
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        push: true
+        tags: singelet/linuxkit:$KERNEL_SERIES-${{matrix.targetarch}}-${{matrix.target.os}}$EXTRA
