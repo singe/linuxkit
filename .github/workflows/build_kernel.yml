@@ -1,0 +1,61 @@
+name: LinuxKit CI
+on: [push, pull_request]
+
+env:
+  KERNEL_SERIES: 5.15.x
+  EXTRA: -wifi
+
+jobs:
+  build:
+    name: Build & Test
+    strategy:
+      matrix:
+        target:
+          - os: linux
+            arch: amd64
+            suffix: amd64-linux
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            suffix: arm64-linux
+            runner: ubuntu-latest
+          - os: darwin
+            arch: amd64
+            suffix: amd64-darwin
+            runner: macos-latest
+          - os: darwin
+            arch: arm64
+            suffix: arm64-darwin
+            runner: macos-latest
+
+    runs-on: ${{ matrix.target.runner }}
+    steps:
+
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Add wifi kernel config
+      working-directory: ./kernel
+      run: |
+        cat config-$KERNEL_SERIES-x86_64 config$EXTRA > config-$KERNEL_SERIES-x86_64$EXTRA
+
+    - name: Build
+      working-directory: ./kernel
+      run: |
+        make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
+
+    - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: singelet/linuxkit:$KERNEL_SERIES-${{matrix.targetarch}}-${{matrix.target.os}}$EXTRA
