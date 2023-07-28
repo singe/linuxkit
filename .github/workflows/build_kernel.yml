@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - 'kernel/**'
+      - '.github/workflows/build_kernel.yml'
 
 env:
   KERNEL_SERIES: 5.15.x
