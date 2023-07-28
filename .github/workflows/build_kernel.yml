@@ -1,5 +1,8 @@
 name: LinuxKit Kernel Builder
-on: [push, pull_request]
+on:
+  push:
+    paths:
+      - 'kernel/**'
 
 env:
   KERNEL_SERIES: 5.15.x
@@ -50,5 +53,5 @@ jobs:
       with:
         context: .
         push: true
-        tags: singelet/linuxkit:$KERNEL_SERIES-${{matrix.targetarch}}-${{matrix.target.os}}$EXTRA
+        tags: singelet/linuxkit:${{$KERNEL_SERIES}}-${{matrix.targetarch}}${{$EXTRA}}
 
