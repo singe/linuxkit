@@ -19,14 +19,6 @@ jobs:
             arch: arm64
             suffix: arm64-linux
             runner: ubuntu-latest
-          - os: darwin
-            arch: amd64
-            suffix: amd64-darwin
-            runner: macos-latest
-          - os: darwin
-            arch: arm64
-            suffix: arm64-darwin
-            runner: macos-latest
 
     runs-on: ${{ matrix.target.runner }}
     steps:
