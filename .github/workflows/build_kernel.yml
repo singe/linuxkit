@@ -65,23 +65,43 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Tag and push the image
+    - name: Tag and push the image amd64
       working-directory: ./kernel
       run: |
         buildimage=$(docker images --filter=reference='linuxkit\/kernel:*' --format {{.Repository}}:{{.Tag}})
-        newimage="$DOCKER_REPO:$KERNEL_SERIES$EXTRA"
+        newimage="$DOCKER_REPO:$KERNEL_SERIES-x86_64$EXTRA"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
         KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
-        newimage="$DOCKER_REPO:$KERNEL_VERSION$EXTRA"
+        newimage="$DOCKER_REPO:$KERNEL_VERSION-x86_64$EXTRA"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
-        newimage="$DOCKER_REPO:latest"
+        newimage="$DOCKER_REPO:latest-x86_64"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
+      if: matrix.target.arch == 'amd64'
+
+    - name: Tag and push the image arm64
+      working-directory: ./kernel
+      run: |
+        buildimage=$(docker images --filter=reference='linuxkit\/kernel:*' --format {{.Repository}}:{{.Tag}})
+        newimage="$DOCKER_REPO:$KERNEL_SERIES-aarch64$EXTRA"
+        echo Tagging $buildimage as $newimage
+        docker tag $buildimage $newimage
+        docker push $newimage
+        KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
+        newimage="$DOCKER_REPO:$KERNEL_VERSION-aarch64$EXTRA"
+        echo Tagging $buildimage as $newimage
+        docker tag $buildimage $newimage
+        docker push $newimage
+        newimage="$DOCKER_REPO:latest-aarch64"
+        echo Tagging $buildimage as $newimage
+        docker tag $buildimage $newimage
+        docker push $newimage
+      if: matrix.target.arch == 'arm64'
 
     #- name: Build and push
       #uses: docker/build-push-action@v4
