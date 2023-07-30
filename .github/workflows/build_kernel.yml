@@ -40,7 +40,7 @@ jobs:
         cat config-$KERNEL_SERIES-x86_64 config$EXTRA > config-$KERNEL_SERIES-x86_64$EXTRA
       if: matrix.target.arch == 'amd64'
 
-    - name: Add wifi kernel config
+    - name: Add wifi kernel config arm64
       working-directory: ./kernel
       run: |
         cat config-$KERNEL_SERIES-aarch64 config$EXTRA > config-$KERNEL_SERIES-aarch64$EXTRA
@@ -56,7 +56,7 @@ jobs:
       working-directory: ./kernel
       run: |
         export ARCH="aarch64"
-        make EXTRA="$EXTRA" build_$KERNEL_SERIES-aarch64$EXTRA
+        make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
       if: matrix.target.arch == 'arm64'
 
     - name: Login to Docker Hub
