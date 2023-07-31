@@ -60,7 +60,7 @@ jobs:
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
-        newimage="$DOCKER_REPO:latest-x86_64"
+        newimage="$DOCKER_REPO:latest"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
