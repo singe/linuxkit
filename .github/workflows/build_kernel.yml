@@ -39,6 +39,11 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+    - name: Install manifest-tool
+      uses: pixelfederation/gh-action-manifest-tool@v0.1.0
+      with:
+        platforms: ${{ matrix.platform }}
+
     - name: Build
       working-directory: ./kernel
       run: |
