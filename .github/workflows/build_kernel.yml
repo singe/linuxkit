@@ -20,10 +20,6 @@ jobs:
             arch: amd64
             suffix: amd64-linux
             runner: ubuntu-latest
-          - os: linux
-            arch: arm64
-            suffix: arm64-linux
-            runner: ubuntu-latest
 
     runs-on: ${{ matrix.target.runner }}
     steps:
@@ -34,30 +30,16 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v2
 
-    - name: Add wifi kernel config amd64
+    - name: Add wifi kernel config
       working-directory: ./kernel
       run: |
         cat config-$KERNEL_SERIES-x86_64 config$EXTRA > config-$KERNEL_SERIES-x86_64$EXTRA
-      if: matrix.target.arch == 'amd64'
-
-    - name: Add wifi kernel config arm64
-      working-directory: ./kernel
-      run: |
         cat config-$KERNEL_SERIES-aarch64 config$EXTRA > config-$KERNEL_SERIES-aarch64$EXTRA
-      if: matrix.target.arch == 'arm64'
 
-    - name: Build amd64
+    - name: Build
       working-directory: ./kernel
       run: |
-        make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
-      if: matrix.target.arch == 'amd64'
-
-    - name: Build aarch64
-      working-directory: ./kernel
-      run: |
-        export ARCH="aarch64"
-        make EXTRA="$EXTRA" build_$KERNEL_SERIES$EXTRA
-      if: matrix.target.arch == 'arm64'
+        make EXTRA="$EXTRA" ORG="singelet" IMAGE="linuxkit-kernel-wifi" buildx_$KERNEL_SERIES$EXTRA
 
     - name: Login to Docker Hub
       uses: docker/login-action@v2
@@ -68,13 +50,13 @@ jobs:
     - name: Tag and push the image amd64
       working-directory: ./kernel
       run: |
-        buildimage=$(docker images --filter=reference='linuxkit\/kernel:*' --format {{.Repository}}:{{.Tag}})
-        newimage="$DOCKER_REPO:$KERNEL_SERIES-x86_64$EXTRA"
+        buildimage=$(docker images --filter=reference='singelet\/linuxkit-kernel-wifi:*' --format {{.Repository}}:{{.Tag}})
+        newimage="$DOCKER_REPO:$KERNEL_SERIES$EXTRA"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
         KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
-        newimage="$DOCKER_REPO:$KERNEL_VERSION-x86_64$EXTRA"
+        newimage="$DOCKER_REPO:$KERNEL_VERSION$EXTRA"
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
@@ -82,31 +64,3 @@ jobs:
         echo Tagging $buildimage as $newimage
         docker tag $buildimage $newimage
         docker push $newimage
-      if: matrix.target.arch == 'amd64'
-
-    - name: Tag and push the image arm64
-      working-directory: ./kernel
-      run: |
-        buildimage=$(docker images --filter=reference='linuxkit\/kernel:*' --format {{.Repository}}:{{.Tag}})
-        newimage="$DOCKER_REPO:$KERNEL_SERIES-aarch64$EXTRA"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
-        KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
-        newimage="$DOCKER_REPO:$KERNEL_VERSION-aarch64$EXTRA"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
-        newimage="$DOCKER_REPO:latest-aarch64"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
-      if: matrix.target.arch == 'arm64'
-
-    #- name: Build and push
-      #uses: docker/build-push-action@v4
-      #with:
-        #context: .
-        #push: true
-        #tags: singelet/linuxkit:${{env.KERNEL_SERIES}}-${{matrix.targetarch}}${{env.EXTRA}}
-
