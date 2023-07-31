@@ -12,16 +12,13 @@ env:
 
 jobs:
   build:
-    name: Build & Test
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        target:
-          - os: linux
-            arch: amd64
-            suffix: amd64-linux
-            runner: ubuntu-latest
+        platform:
+          - linux/amd64
+          - linux/arm64
 
-    runs-on: ${{ matrix.target.runner }}
     steps:
 
     - name: Check out code
@@ -36,31 +33,31 @@ jobs:
         cat config-$KERNEL_SERIES-x86_64 config$EXTRA > config-$KERNEL_SERIES-x86_64$EXTRA
         cat config-$KERNEL_SERIES-aarch64 config$EXTRA > config-$KERNEL_SERIES-aarch64$EXTRA
 
-    - name: Build
-      working-directory: ./kernel
-      run: |
-        make EXTRA="$EXTRA" ORG="singelet" IMAGE="linuxkit-kernel-wifi" buildx_$KERNEL_SERIES$EXTRA
-
     - name: Login to Docker Hub
       uses: docker/login-action@v2
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    - name: Tag and push the image amd64
+    - name: Build
       working-directory: ./kernel
       run: |
-        buildimage=$(docker images --filter=reference='singelet\/linuxkit-kernel-wifi:*' --format {{.Repository}}:{{.Tag}})
-        newimage="$DOCKER_REPO:$KERNEL_SERIES$EXTRA"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
-        KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
-        newimage="$DOCKER_REPO:$KERNEL_VERSION$EXTRA"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
-        newimage="$DOCKER_REPO:latest"
-        echo Tagging $buildimage as $newimage
-        docker tag $buildimage $newimage
-        docker push $newimage
+        make PLATFORM=${{ matrix.platform }} EXTRA="$EXTRA" ORG="singelet" IMAGE="linuxkit-kernel-wifi" push_$KERNEL_SERIES$EXTRA
+
+    #- name: Tag and push the image amd64
+      #working-directory: ./kernel
+      #run: |
+        #buildimage=$(docker images --filter=reference='singelet\/linuxkit-kernel-wifi:*' --format {{.Repository}}:{{.Tag}})
+        #newimage="$DOCKER_REPO:$KERNEL_SERIES$EXTRA"
+        #echo Tagging $buildimage as $newimage
+        #docker tag $buildimage $newimage
+        #docker push $newimage
+        #KERNEL_VERSION=$(echo $buildimage | grep -o $(echo $KERNEL_SERIES|sed "s/x/[0-9]*/"))
+        #newimage="$DOCKER_REPO:$KERNEL_VERSION$EXTRA"
+        #echo Tagging $buildimage as $newimage
+        #docker tag $buildimage $newimage
+        #docker push $newimage
+        #newimage="$DOCKER_REPO:latest"
+        #echo Tagging $buildimage as $newimage
+        #docker tag $buildimage $newimage
+        #docker push $newimage
