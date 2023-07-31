@@ -43,6 +43,7 @@ jobs:
     - name: Build image
       working-directory: ./kernel
       run: |
+        uname -a
         make PLATFORM=${{ matrix.platform }} EXTRA="$EXTRA" ORG="$DOCKER_OWNER" IMAGE="$DOCKER_REPO" build_$KERNEL_SERIES$EXTRA
 
     - name: Push arch specific image
@@ -73,7 +74,7 @@ jobs:
     - name: Push multi-arch manifest
       working-directory: ./kernel
       run: |
-        TAG=$(git ls-tree --full-tree HEAD -- kernel)
+        TAG=$(git ls-tree --full-tree HEAD -- kernel | awk '{print $3}')
         FULL_REPO="docker.io/$DOCKER_OWNER/$DOCKER_REPO"
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-amd64 $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-arm64
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG
