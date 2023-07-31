@@ -10,7 +10,6 @@ env:
   EXTRA: -wifi
   DOCKER_OWNER: singelet
   DOCKER_REPO: linuxkit-kernel-wifi
-  FULL_REPO: docker.io/${{ env.DOCKER_OWNER }}/${{ env.DOCKER_REPO }}
 
 jobs:
   build:
@@ -75,6 +74,7 @@ jobs:
       working-directory: ./kernel
       run: |
         TAG=$(git ls-tree --full-tree HEAD -- kernel)
+        FULL_REPO="docker.io/$DOCKER_OWNER/$DOCKER_REPO"
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-amd64 $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-arm64
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG
         docker buildx imagetools create -t $FULL_REPO:latest $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG
