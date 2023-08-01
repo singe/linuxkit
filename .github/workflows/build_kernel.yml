@@ -50,7 +50,9 @@ jobs:
       working-directory: ./kernel
       run: |
         BUILDIMAGE=$(docker images --filter=reference="$DOCKER_OWNER/$DOCKER_REPO:*" --format {{.Repository}}:{{.Tag}})
+        echo wat
         echo $BUILDIMAGE
+        echo why
         if [[ "${{ matrix.platform }}" == "linux/amd64" ]]; then ARCH="amd64"; else ARCH="arm64"; fi
         docker push $BUILDIMAGE-$ARCH
 
