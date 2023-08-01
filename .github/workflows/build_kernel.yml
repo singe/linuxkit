@@ -43,6 +43,7 @@ jobs:
     - name: Build image
       working-directory: ./kernel
       run: |
+        echo Building for ${{ matrix.platform }}
         make PLATFORM=${{ matrix.platform }} EXTRA="$EXTRA" ORG="$DOCKER_OWNER" IMAGE="$DOCKER_REPO" buildx_$KERNEL_SERIES$EXTRA
 
     - name: Push arch specific image
