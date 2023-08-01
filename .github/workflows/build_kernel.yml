@@ -76,7 +76,8 @@ jobs:
       working-directory: ./kernel
       run: |
         TAG=$(git ls-tree --full-tree HEAD -- kernel | awk '{print $3}')
+        KERNEL_VERSION=$(grep "^\$(eval" Makefile | grep "$KERNEL_SERIES,,-dbg"|cut -d, -f2)
         FULL_REPO="docker.io/$DOCKER_OWNER/$DOCKER_REPO"
-        docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-amd64 $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG-arm64
-        docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG
-        docker buildx imagetools create -t $FULL_REPO:latest $FULL_REPO:$KERNEL_SERIES$EXTRA-$TAG
+        docker buildx imagetools create -t $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG-amd64 $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG-arm64
+        docker buildx imagetools create -t $FULL_REPO:$KERNEL_VERSION$EXTRA $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG
+        docker buildx imagetools create -t $FULL_REPO:latest $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG
