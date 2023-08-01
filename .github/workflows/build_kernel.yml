@@ -49,10 +49,14 @@ jobs:
     - name: Push arch specific image
       working-directory: ./kernel
       run: |
-        BUILDIMAGE=$(docker images --filter=reference="$DOCKER_OWNER/$DOCKER_REPO:*" --format {{.Repository}}:{{.Tag}})
+        echo start
+        BUILDIMAGE=$(docker images --filter=reference="$DOCKER_OWNER/$DOCKER_REPO:*" --format {{.Repository}}:{{.Tag}}|head -n1)
+        echo BUILDIMAGE is $BUILDIMAGE
         if [[ "${{ matrix.platform }}" == "linux/amd64" ]]; then ARCH="amd64"; else ARCH="arm64"; fi
-        docker tag $BUILDIMAGE $BUILDIMAGE-$ARCH
-        docker push $BUILDIMAGE-$ARCH
+        echo ARCH is $ARCH
+        echo FULL is $BUILDIMAGE-$ARCH
+        docker tag -- $BUILDIMAGE $BUILDIMAGE-$ARCH
+        docker push -- $BUILDIMAGE-$ARCH
 
   merge:
     runs-on: ubuntu-latest
