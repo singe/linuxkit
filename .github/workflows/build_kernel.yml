@@ -71,6 +71,11 @@ jobs:
         TAG=$(git ls-tree --full-tree HEAD -- kernel | awk '{print $3}')
         KERNEL_VERSION=$(grep "^\$(eval" Makefile | grep "$KERNEL_SERIES,,-dbg"|cut -d, -f2)
         FULL_REPO="docker.io/$DOCKER_OWNER/$DOCKER_REPO"
+        # 5.15.27-wifi-<hash>
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG $FULL_REPO:$KERNEL_VERSION$EXTRA-amd64-$TAG $FULL_REPO:$KERNEL_VERSION$EXTRA-arm64-$TAG
+        # 5.15.27-wifi
         docker buildx imagetools create -t $FULL_REPO:$KERNEL_VERSION$EXTRA $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG
+        # 5.15.x-wifi
+        docker buildx imagetools create -t $FULL_REPO:$KERNEL_SERIES$EXTRA $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG
+        # latest
         docker buildx imagetools create -t $FULL_REPO:latest $FULL_REPO:$KERNEL_VERSION$EXTRA-$TAG
