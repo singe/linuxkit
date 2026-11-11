@@ -1,5 +1,6 @@
-FROM linuxkit/containerd-dev:ee5755eb38c0a6b6aef2658b757652d82556c30c AS containerd-dev
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS build
+# Dockerfile to build linuxkit/init for linuxkit
+FROM linuxkit/containerd-dev:405449f30ba384a0f67ad1b75f78a501604f2e44 AS containerd-dev
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS build
 RUN apk add --no-cache --initdb alpine-baselayout make gcc musl-dev git linux-headers
 
 ADD usermode-helper.c ./
@@ -23,7 +24,10 @@ COPY --from=containerd-dev /go/src/github.com/containerd/containerd $GOPATH/src/
 RUN cd /go/src/cmd/service && ./skanky-vendor.sh $GOPATH/src/github.com/containerd/containerd
 RUN go-compile.sh /go/src/cmd/service
 
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS mirror
+# volumes link to start
+RUN mkdir -p /etc/init.d && ln -s /usr/bin/service /etc/init.d/005-volumes
+
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS mirror
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 RUN apk add --no-cache --initdb -p /out alpine-baselayout busybox musl
 
@@ -33,6 +37,7 @@ RUN mkdir -p /out/etc/ssl/certs
 # Remove cache residuals. We retain apk for SBOM tools
 RUN rm -rf /out/var/cache
 
+
 FROM scratch
 ENTRYPOINT []
 CMD []
@@ -41,5 +46,6 @@ COPY --from=build /go/bin/init /
 COPY --from=build /tmp/bin /bin/
 COPY --from=build /go/bin/service /usr/bin/
 COPY --from=build usermode-helper /sbin/
+COPY --from=build /etc/init.d/ /etc/init.d/
 COPY --from=mirror /out/ /
 COPY etc etc/

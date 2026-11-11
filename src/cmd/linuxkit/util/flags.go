@@ -3,6 +3,7 @@ package util
 import (
 	"errors"
 	stdlog "log"
+	"strings"
 
 	ggcrlog "github.com/google/go-containerregistry/pkg/logs"
 	log "github.com/sirupsen/logrus"
@@ -25,24 +26,51 @@ func (f *infoFormatter) Format(entry *log.Entry) ([]byte, error) {
 }
 
 // SetupLogging once the flags have been parsed, setup the logging
-func SetupLogging(quiet, verbose bool) error {
+func SetupLogging(quiet bool, verbose int, verboseSet bool) error {
 	// Set up logging
 	log.SetFormatter(new(infoFormatter))
 	log.SetLevel(log.InfoLevel)
-	if quiet && verbose {
+	if quiet && verboseSet && verbose > 0 {
 		return errors.New("can't set quiet and verbose flag at the same time")
 	}
-	if quiet {
+	switch {
+	case quiet, verbose == 0:
 		log.SetLevel(log.ErrorLevel)
-	}
-	if verbose {
+	case verbose == 1:
+		if verboseSet {
+			// Switch back to the standard formatter
+			log.SetFormatter(defaultLogFormatter)
+		}
+		log.SetLevel(log.InfoLevel)
+	case verbose == 2:
 		// Switch back to the standard formatter
 		log.SetFormatter(defaultLogFormatter)
 		log.SetLevel(log.DebugLevel)
 		// set go-containerregistry logging as well
 		ggcrlog.Warn = stdlog.New(log.StandardLogger().WriterLevel(log.WarnLevel), "", 0)
 		ggcrlog.Debug = stdlog.New(log.StandardLogger().WriterLevel(log.DebugLevel), "", 0)
+	case verbose == 3:
+		// Switch back to the standard formatter
+		log.SetFormatter(defaultLogFormatter)
+		log.SetLevel(log.TraceLevel)
+		// set go-containerregistry logging as well
+		ggcrlog.Warn = stdlog.New(log.StandardLogger().WriterLevel(log.WarnLevel), "", 0)
+		ggcrlog.Debug = stdlog.New(log.StandardLogger().WriterLevel(log.DebugLevel), "", 0)
+	default:
+		return errors.New("verbose flag can only be set to 0, 1, 2 or 3")
 	}
-	ggcrlog.Progress = stdlog.New(log.StandardLogger().WriterLevel(log.InfoLevel), "", 0)
+	// Keep completion events synchronous so an interactive display can account
+	// for them before restoring its formatter/output at the end of a push.
+	ggcrlog.Progress = stdlog.New(ggcrProgressWriter{}, "", 0)
 	return nil
+}
+
+// GGCRProgressField identifies progress events without inspecting formatted logs.
+const GGCRProgressField = "ggcr_progress"
+
+type ggcrProgressWriter struct{}
+
+func (ggcrProgressWriter) Write(p []byte) (int, error) {
+	log.WithField(GGCRProgressField, true).Info(strings.TrimSuffix(string(p), "\n"))
+	return len(p), nil
 }

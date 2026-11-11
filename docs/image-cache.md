@@ -59,3 +59,42 @@ is provided, it always will pull, independent of what is in the cache.
 
 The read process is smart enough to check each blob in the local cache before downloading
 it from a registry.
+
+## Docker context selection
+
+`linuxkit build --docker` reads images from the context chosen by `--context`,
+`DOCKER_CONTEXT`, `DOCKER_HOST`, or automatic selection of an existing
+`desktop-linux` context followed by `default`. The saved `docker context use`
+selection is ignored.
+`linuxkit pkg build --docker` loads output images into that general context,
+even when platform builders run remotely. Connection failures during optional
+cache reads are reported as warnings before falling back to the LinuxKit cache
+or registry. See [Docker contexts and container backends](docker-contexts.md).
+
+## Imports from local Docker instance
+
+To import an image from your local Docker daemon into LinuxKit, you’ll need to ensure the image is exported in the [OCI image format](https://docs.docker.com/build/exporters/oci-docker/), which LinuxKit understands.
+
+This requires using a `docker-container` [buildx driver](https://docs.docker.com/build/builders/drivers/docker-container/), rather than the default.
+
+Set it up like so:
+
+```shell
+docker buildx create --driver docker-container --driver-opt image=moby/buildkit:latest --name=ocibuilder --bootstrap
+```
+
+Then build and export your image using the OCI format:
+
+```shell
+docker buildx build --builder=ocibuilder --output type=oci,name=foo . > foo.tar
+```
+
+You can now import it into LinuxKit with:
+
+```shell
+linuxkit cache import foo.tar
+```
+
+Note that this process, as described, will only produce images for the platform/architecture you're currently on. To produce multi-platform images requires extra docker build flags and external builder or QEMU support - see [here](https://docs.docker.com/build/building/multi-platform/).
+
+This workaround is only necessary when working with the local Docker daemon. If you’re pulling from Docker Hub or another registry, you don’t need to do any of this.

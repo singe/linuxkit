@@ -1,0 +1,89 @@
+package pkglib
+
+// Thin wrappers around Docker CLI invocations
+
+//go:generate ./gen
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"path"
+	"strings"
+
+	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/dockercontext"
+	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
+	buildkitClient "github.com/moby/buildkit/client"
+
+	// golint requires comments on non-main(test)
+	// package for blank import
+
+	_ "github.com/moby/buildkit/client/connhelper/dockercontainer"
+	_ "github.com/moby/buildkit/client/connhelper/ssh"
+)
+
+type dockerDryRunnerImpl struct {
+	builder BuilderConfig
+}
+
+func NewDockerDryRunner(bc BuilderConfig) DockerRunner {
+	return &dockerDryRunnerImpl{builder: bc}
+}
+
+func (dr *dockerDryRunnerImpl) ContextSupportCheck() error {
+	return nil
+}
+
+// Builder does not connect to or create containers during a dry run.
+func (dr *dockerDryRunnerImpl) Builder(ctx context.Context, dockerContext, platform string) (*buildkitClient.Client, error) {
+	return nil, nil
+}
+
+func (dr *dockerDryRunnerImpl) Pull(img string) (bool, error) {
+	return false, errors.New("not implemented")
+}
+
+func (dr *dockerDryRunnerImpl) Tag(ref, tag string) error {
+	return errors.New("not implemented")
+}
+
+func (dr *dockerDryRunnerImpl) Build(ctx context.Context, tag, pkg, dockerContext, platform string, preCacheImages bool, c spec.CacheProvider, stdin io.Reader, stdout io.Writer, sbomScan bool, sbomScannerImage, progressType string, imageBuildOpts spec.ImageBuildOptions) error {
+	selection, err := dockercontext.ResolveBuilder(dockerContext, dr.builder.Context, platform)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("# builder Docker context: %s (selected by %s)\n", selection.Name, selection.Source)
+	// build args
+	var buildArgs []string
+	for k, v := range imageBuildOpts.BuildArgs {
+		buildArgs = append(buildArgs, fmt.Sprintf("--build-arg=%s=%s", k, *v))
+	}
+
+	// network
+	var network string
+	switch imageBuildOpts.NetworkMode {
+	case "host", "none", "default":
+		network = fmt.Sprintf("--network=%s", imageBuildOpts.NetworkMode)
+	default:
+		return fmt.Errorf("unsupported network mode %q", imageBuildOpts.NetworkMode)
+	}
+
+	// labels
+	var labels []string
+	for k, v := range imageBuildOpts.Labels {
+		labels = append(labels, fmt.Sprintf("--label=%s=%s", k, v))
+	}
+
+	fmt.Printf("docker --context %s buildx build --platform %s -t %s -f %s %s %s %s %s\n", selection.Name, platform, tag, path.Join(pkg, imageBuildOpts.Dockerfile), strings.Join(buildArgs, " "), strings.Join(labels, " "), network, pkg)
+
+	return nil
+}
+
+func (dr *dockerDryRunnerImpl) Save(tgt string, refs ...string) error {
+	return errors.New("not implemented")
+}
+
+func (dr *dockerDryRunnerImpl) Load(src io.Reader) error {
+	return errors.New("not implemented")
+}

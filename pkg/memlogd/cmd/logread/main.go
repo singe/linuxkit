@@ -41,6 +41,11 @@ func main() {
 	flag.BoolVar(&follow, "f", false, "follow log buffer")
 	flag.Parse()
 
+	if dumpFollow {
+		// StreamLogs() has seperate 'dump' and 'follow' flags, since 'dumpFollow' includes 'follow' we set that too
+		follow = true
+	}
+
 	c, err := StreamLogs(socketPath, follow, dumpFollow)
 	if err != nil {
 		panic(err)
@@ -67,7 +72,6 @@ func StreamLogs(socketPath string, follow, dump bool) (<-chan LogEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
 
 	var n int
 	switch {
@@ -85,6 +89,7 @@ func StreamLogs(socketPath string, follow, dump bool) (<-chan LogEntry, error) {
 
 	c := make(chan LogEntry)
 	go func(c chan<- LogEntry) {
+		defer conn.Close()
 		var (
 			entry   LogEntry
 			decoder = json.NewDecoder(conn)

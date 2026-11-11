@@ -1,0 +1,22 @@
+kernel:
+  image: linuxkit/kernel:6.18.60
+  cmdline: "console=ttyS0 console=ttyAMA0"
+init:
+  - linuxkit/init:075ff447b68e23feef95589c90010a039533e5b5
+  - linuxkit/runc:9442aa234715e751a16144f1d4ae3fd1a00fd492
+onboot:
+  - name: test
+    image: alpine:3.20
+    binds:
+      - /check.sh:/check.sh
+      - vola:/vola
+    command: ["sh", "-c", "/check.sh"]
+  - name: poweroff
+    image: linuxkit/poweroff:4059858a555bed90c2280fa9b060b7a8f8de6d45
+    command: ["/bin/sh", "/poweroff.sh", "10"]
+volumes:
+  - name: vola
+files:
+  - path: check.sh
+    source: ./check.sh
+    mode: "0700"

@@ -1,6 +1,9 @@
 name: LinuxKit CI
 on: [push, pull_request]
 
+env:
+  TOTAL_SHARDS: 12   # change here once
+
 jobs:
   build:
     name: Build & Test
@@ -35,14 +38,14 @@ jobs:
     runs-on: ${{ matrix.target.runner }}
     steps:
 
-    - name: Set up Go 1.19
-      uses: actions/setup-go@v3
-      with:
-        go-version: 1.19.2
-      id: go
-
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+
+    - name: Set up Go based on go.mod
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'src/cmd/linuxkit/go.mod'
+      id: go
 
     - name: Set path
       run: echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
@@ -50,9 +53,9 @@ jobs:
          GOPATH: ${{runner.workspace}}
 
     - name: golangci-lint CLI
-      uses: golangci/golangci-lint-action@v3
+      uses: golangci/golangci-lint-action@v7
       with:
-        version: v1.50.0
+        version: v2.11.4
         working-directory: src/cmd/linuxkit
         args: --verbose --timeout=10m
     - name: go vet CLI
@@ -79,7 +82,7 @@ jobs:
         GOPATH: ${{runner.workspace}}
 
     - name: Upload binary
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: linuxkit-${{matrix.target.suffix}}
         path: |
@@ -93,14 +96,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up binfmt
-      # Only register arm64 as we are on amd64 already. s390x is not reliable
-      run: docker run --privileged --rm tonistiigi/binfmt --install arm64
+      # Only register arm64 and riscv64 as we are on amd64 already. s390x is not reliable
+      run: docker run --privileged --rm tonistiigi/binfmt --install arm64,riscv64
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -112,7 +115,7 @@ jobs:
         /usr/local/bin/linuxkit version
 
     - name: Cache Packages
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
@@ -122,24 +125,74 @@ jobs:
     - name: Build Packages
       # Skip s390x as emulation is unreliable
       run: |
-        make OPTIONS="-v --skip-platforms linux/s390x" -C pkg build
+        make OPTIONS="-v 2 --skip-platforms linux/s390x" -C pkg build
 
     - name: Build Test Packages
       # ensures that the test packages are in linuxkit cache when we need them for tests later
       # Skip s390x as emulation is unreliable
       run: |
-        make OPTIONS="-v --skip-platforms linux/s390x" -C test/pkg build
+        make OPTIONS="-v 2 --skip-platforms linux/s390x" -C test/pkg build
+
+    - name: Check Kernel Dependencies up to date
+      # checks that any kernel dependencies are up to date.
+      # if they are, then running `make update-kernel-yamls` will not change anything
+      run: |
+        echo "checking git diff before running make update-kernel-yamls"
+        git diff --exit-code
+        echo "running make update-kernel-yamls"
+        make -C kernel update-kernel-yamls
+        echo "checking git diff again after running make update-kernel-yamls; should be no changes"
+        git diff --exit-code
+
+    - name: Build Kernels
+      # ensures that the kernel packages are in linuxkit cache when we need them for tests later
+      # no need for excluding s390x, as each build.yml in the kernel explicitly lists archs
+      run: |
+        make OPTIONS="-v 2" -C kernel build
+
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+  
+  gen_package_test_matrix:
+    name: Generate Package Test Matrix
+    needs: [ build_packages, build ]
+    runs-on: ubuntu-latest
+    outputs:
+      shard_list: ${{ steps.mk.outputs.list }}
+    steps:
+    - name: Generate Test Matrix
+      id: mk
+      shell: bash
+      run: |
+          set -x
+          N="${{ env.TOTAL_SHARDS }}"
+          # Priority: repo var SHARDS → event-based default (PR=6, else 10)
+          if [ -n "${{ vars.SHARDS }}" ]; then
+            N="${{ vars.SHARDS }}"
+          fi
+
+          # Build JSON array ["1/N","2/N",...,"N/N"]
+          shards=""
+          for i in $(seq 1 "$N"); do
+            if [ -z "$shards" ]; then
+              shards="\"$i/$N\""
+            else
+              shards="$shards,\"$i/$N\""
+            fi
+          done
+          echo "list=[$shards]" >> "$GITHUB_OUTPUT"
 
   test_packages:
     name: Packages Tests
-    needs: [ build_packages, build ]
+    needs: [ build_packages, build, gen_package_test_matrix ]
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        shard: [1/10,2/10,3/10,4/10,5/10,6/10,7/10,8/10,9/10,10/10]
+        shard: ${{ fromJson(needs.gen_package_test_matrix.outputs.shard_list) }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Pre-Requisites
       run: |
@@ -149,7 +202,7 @@ jobs:
 
     - name: Restore RTF From Cache
       id: cache-rtf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: bin
         key: rtf-${{hashFiles('Makefile')}}
@@ -163,7 +216,7 @@ jobs:
         sudo ln -s $(pwd)/bin/rtf /usr/local/bin/rtf
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -175,13 +228,16 @@ jobs:
         /usr/local/bin/linuxkit version
 
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-linuxkit-
-
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+      
     - name: Run Tests
       run: make test TEST_SUITE=linuxkit.packages TEST_SHARD=${{ matrix.shard }}
 
@@ -191,7 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Pre-Requisites
       run: |
@@ -201,7 +257,7 @@ jobs:
 
     - name: Restore RTF From Cache
       id: cache-rtf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: bin
         key: rtf-${{hashFiles('Makefile')}}
@@ -215,7 +271,7 @@ jobs:
         sudo ln -s $(pwd)/bin/rtf /usr/local/bin/rtf
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -227,13 +283,17 @@ jobs:
         /usr/local/bin/linuxkit version
 
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-linuxkit-
 
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+      
     - name: Run Tests
       run: make test TEST_SUITE=linuxkit.kernel
 
@@ -243,7 +303,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Pre-Requisites
       run: |
@@ -253,13 +313,13 @@ jobs:
 
     - name: Restore RTF From Cache
       id: cache-rtf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: bin
         key: rtf-${{hashFiles('Makefile')}}
 
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
@@ -275,7 +335,7 @@ jobs:
         sudo ln -s $(pwd)/bin/rtf /usr/local/bin/rtf
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -286,6 +346,10 @@ jobs:
         sudo ln -s $(pwd)/bin/linuxkit-amd64-linux /usr/local/bin/linuxkit
         /usr/local/bin/linuxkit version
 
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+  
     - name: Run Tests
       run: make test TEST_SUITE=linuxkit.build
 
@@ -295,7 +359,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Pre-Requisites
       run: |
@@ -305,7 +369,7 @@ jobs:
 
     - name: Restore RTF From Cache
       id: cache-rtf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: bin
         key: rtf-${{hashFiles('Makefile')}}
@@ -319,7 +383,7 @@ jobs:
         sudo ln -s $(pwd)/bin/rtf /usr/local/bin/rtf
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -331,13 +395,17 @@ jobs:
         /usr/local/bin/linuxkit version
 
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-linuxkit-
 
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+      
     - name: Run Tests
       run: make test TEST_SUITE=linuxkit.platforms
 
@@ -347,7 +415,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Install Pre-Requisites
       run: |
@@ -357,7 +425,7 @@ jobs:
 
     - name: Restore RTF From Cache
       id: cache-rtf
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: bin
         key: rtf-${{hashFiles('Makefile')}}
@@ -371,7 +439,7 @@ jobs:
         sudo ln -s $(pwd)/bin/rtf /usr/local/bin/rtf
 
     - name: Download linuxkit
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: linuxkit-amd64-linux
         path: bin
@@ -383,12 +451,16 @@ jobs:
         /usr/local/bin/linuxkit version
 
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
         restore-keys: |
           ${{ runner.os }}-linuxkit-
 
+    - name: list cache contents
+      run: |
+        linuxkit cache ls
+      
     - name: Run Tests
       run: make test TEST_SUITE=linuxkit.security

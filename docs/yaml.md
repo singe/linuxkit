@@ -3,7 +3,7 @@
 The `linuxkit build` command assembles a set of containerised components into in image. The simplest
 type of image is just a `tar` file of the contents (useful for debugging) but more useful
 outputs add a `Dockerfile` to build a container, or build a full disk image that can be
-booted as a linuxKit VM. The main use case is to build an assembly that includes
+booted as a linuxkit VM. The main use case is to build an assembly that includes
 `containerd` to run a set of containers, but the tooling is very generic.
 
 The yaml configuration specifies the components used to build up an image . All components
@@ -16,8 +16,19 @@ The Docker images are optionally verified with Docker Content Trust.
 For private registries or private repositories on a registry credentials provided via
 `docker login` are re-used.
 
-The configuration file is processed in the order `kernel`, `init`, `onboot`, `onshutdown`,
-`services`, `files`. Each section adds files to the root file system. Sections may be omitted.
+## Sections
+
+The configuration file is processed in the order:
+
+1. `kernel`
+1. `init`
+1. `volumes`
+1. `onboot`
+1. `onshutdown`
+1. `services`
+1. `files`
+
+Each section adds files to the root file system. Sections may be omitted.
 
 Each container that is specified is allocated a unique `uid` and `gid` that it may use if it
 wishes to run as an isolated user (or user namespace). Anywhere you specify a `uid` or `gid`
@@ -40,7 +51,7 @@ files:
     mode: "0600"
 ```
 
-## `kernel`
+### `kernel`
 
 The `kernel` section is only required if booting a VM. The files will be put into the `boot/`
 directory, where they are used to build bootable images.
@@ -50,6 +61,9 @@ which should contain a `kernel` file that will be booted (eg a `bzImage` for `am
 called `kernel.tar` which is a tarball that is unpacked into the root, which should usually
 contain a kernel modules directory. `cmdline` specifies the kernel command line options if required.
 
+The contents of `cmdline` are passed to the kernel as-is. There are several special values that are
+used to control the behaviour of linuxkit packages. See [kernel command line options](../docs/cmdline.md).
+
 To override the names, you can specify the kernel image name with `binary: bzImage` and the tar image
 with `tar: kernel.tar` or the empty string or `none` if you do not want to use a tarball at all.
 
@@ -57,7 +71,7 @@ Kernel packages may also contain a cpio archive containing CPU microcode which n
 the initrd. To select this option, recommended when booting on bare metal, add `ucode: intel-ucode.cpio`
 to the kernel section.
 
-## `init`
+### `init`
 
 The `init` section is a list of images that are used for the `init` system and are unpacked directly
 into the root filesystem. This should bring up `containerd`, start the system and daemon containers,
@@ -65,14 +79,14 @@ and set up basic filesystem mounts. in the case of a LinuxKit system. For ease o
 modification `runc` and `containerd` images, which just contain these programs are added here
 rather than bundled into the `init` container.
 
-## `onboot`
+### `onboot`
 
 The `onboot` section is a list of images. These images are run before any other
 images. They are run sequentially and each must exit before the next one is run.
 These images can be used to configure one shot settings. See [Image
 specification](#image-specification) for a list of supported fields.
 
-## `onshutdown`
+### `onshutdown`
 
 This is a list of images to run on a clean shutdown. Note that you must not rely on these
 being run at all, as machines may be be powered off or shut down without having time to run
@@ -81,18 +95,149 @@ run and when they are not. Most systems are likely to be "crash only" and not ha
 but you can attempt to deregister cleanly from a network service here, rather than relying
 on timeouts, for example.
 
-## `services`
+### `services`
 
 The `services` section is a list of images for long running services which are
 run with `containerd`.  Startup order is undefined, so containers should wait
 on any resources, such as networking, that they need.  See [Image
 specification](#image-specification) for a list of supported fields.
 
-## `files`
+### `volumes`
+
+The volumes section is a list of named volumes that can be used by other containers,
+including those in `services`, `onboot` and `onshutdown`. The volumes are created in a directory
+chosen by linuxkit at build-time. The volumes then can be referenced by other containers and
+mounted into them.
+
+Volumes can be in one of several formats:
+
+* Blank directory: This is the default, and is an empty directory that is created at build-time. It is an overlayfs mount, and can be shared among multiple containers.
+* Image laid out as filesystem: The contents of the image are used to populate the volume. Default format when an image is provided.
+* Image as OCI v1-layout: The image is used as an [OCI v1-layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md). Indicated by `format: oci`.
+
+Examples of each are given later in this section.
+
+The `volumes` section can declare a volume to be read-write or read-only. If the volume is read-write,
+a volume that is mounted into a container can be mounted read-only or read-write. If the volume is read-only,
+it can be mounted into a container read-only; attempting to do so read-write will generate a build-time error.
+By default, volumes are created read-write, and are mounted read-write.
+
+Volume names **must** be unique, and must contain only lower-case alphanumeric characters, hyphens, and
+underscores.
+
+#### Samples of `volumes`
+
+##### Empty directory
+
+Yaml showing both read-only and read-write:
+
+```yml
+volumes:
+- name: dira
+  readonly: true
+- name: dirb
+  readonly: true
+```
+
+Contents:
+
+```sh
+$ cd dir && ls -la
+drwxr-xr-x   19 root  wheel   608 Sep 30 15:03 .
+drwxrwxrwt  130 root  wheel  4160 Sep 30 15:03 ..
+```
+
+In the above example:
+
+* `dira` is empty and is read-only.
+* `volb` is empty and is read-write.
+
+##### Image directory
+
+Yaml showing both read-only and read-write:
+
+```yml
+volumes:
+- name: vola
+  image: alpine:latest
+  readonly: true
+- name: volb
+  image: alpine:latest
+  format: filesystem     # optional, as this is the default format
+  readonly: false
+```
+
+In the above example:
+
+* `vola` is populated by the contents of `alpine:latest` and is read-only.
+* `volb` is populated by the contents of `alpine:latest` and is read-write.
+
+Contents:
+
+```sh
+$ cd dir && ls -la
+drwxr-xr-x   19 root  wheel   608 Sep 30 15:03 .
+drwxrwxrwt  130 root  wheel  4160 Sep 30 15:03 ..
+drwxr-xr-x   84 root  wheel  2688 Sep  6 14:34 bin
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 dev
+drwxr-xr-x   37 root  wheel  1184 Sep  6 14:34 etc
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 home
+drwxr-xr-x   13 root  wheel   416 Sep  6 14:34 lib
+drwxr-xr-x    5 root  wheel   160 Sep  6 14:34 media
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 mnt
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 opt
+dr-xr-xr-x    2 root  wheel    64 Sep  6 14:34 proc
+drwx------    2 root  wheel    64 Sep  6 14:34 root
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 run
+drwxr-xr-x   63 root  wheel  2016 Sep  6 14:34 sbin
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 srv
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 sys
+drwxr-xr-x    2 root  wheel    64 Sep  6 14:34 tmp
+drwxr-xr-x    7 root  wheel   224 Sep  6 14:34 usr
+drwxr-xr-x   13 root  wheel   416 Sep  6 14:34 var
+```
+
+##### Image OCI Layout
+
+Yaml showing both read-only and read-write, and both all architectures and a limited subset:
+
+```yml
+volumes:
+- name: volo
+  image: alpine:latest
+  format: oci
+  readonly: true
+- name: volp
+  image: alpine:latest
+  readonly: false
+  format: oci
+  platforms:
+    - linux/amd64
+```
+
+In the above example:
+
+* `volo` is populated by the contents of `alpine:latest` as an OCI v1-layout for all architectures and is read-only.
+* `volb` is populated by the contents of `alpine:latest` as an OCI v1-layout just for linux/amd64 and is read-write.
+
+##### Volumes in `services`
+
+Sample usage of volumes in `services` section:
+
+```yml
+services:
+- name: myservice
+  image: alpine:latest
+  binds:
+  - volA:/mnt/volA:ro
+  - volB:/mnt/volB
+```
+
+### `files`
 
 The files section can be used to add files inline in the config, or from an external file.
 
-```
+```yml
 files:
   - path: dir
     directory: true
@@ -118,16 +263,20 @@ user's home directory.
 In addition there is a `metadata` option that will generate the file. Currently the only value
 supported here is `"yaml"` which will output the yaml used to generate the image into the specified
 file:
-```
+
+```yml
   - path: etc/linuxkit.yml
     metadata: yaml
 ```
+
+Note that if you use templates in the yaml, the final resolved version will be included in the image,
+and not the original input template.
 
 Because a `tmpfs` is mounted onto `/var`, `/run`, and `/tmp` by default, the `tmpfs` mounts will shadow anything specified in `files` section for those directories.
 
 ## Image specification
 
-Entries in the `onboot` and `services` sections specify an OCI image and
+Entries in the `onboot`, `onshutdown`, `volumes` and `services` sections specify an OCI image and
 options. Default values may be specified using the `org.mobyproject.config` image label.
 For more details see the [OCI specification](https://github.com/opencontainers/runtime-spec/blob/master/spec.md).
 
@@ -202,7 +351,8 @@ which specifies some actions to take place when the container is being started.
 - `namespace` overrides the LinuxKit default containerd namespace to put the container in; only applicable to services.
 
 An example of using the `runtime` config to configure a network namespace with `wireguard` and then run `nginx` in that namespace is shown below:
-```
+
+```yml
 onboot:
   - name: dhcpcd
     image: linuxkit/dhcpcd:<hash>
@@ -292,4 +442,44 @@ On the other hand, if you have a container that will make new mounts that you wi
 binds:
  - /var:/var:rshared,rbind
 rootfsPropagation: shared
+```
+
+## Templates
+
+The `yaml` file supports templates for the names of images. Anyplace an image is used in a file and begins
+with the character `@`, it indicates that it is not an actual name, but a template. The first word after
+the `@` indicates the type of template, and the rest of the line is the argument to the template. The
+templates currently supported are:
+
+* `@pkg:` - the argument is the path to a linuxkit package. For example, `@pkg:./pkg/init`.
+
+For `pkg`, linuxkit will resolve the path to the package, and then run the equivalent of `linuxkit pkg show-tag <dir>`.
+For example:
+
+```yaml
+init:
+  - "@pkg:../pkg/init"
+```
+
+Will cause linuxkit to resolve `../pkg/init` to a package, and then run `linuxkit pkg show-tag ../pkg/init`.
+
+The paths are relative to the directory of the yaml file.
+You can specify absolute paths, although it is not recommended, as that can make the yaml file less portable.
+
+The `@pkg:` templating is supported **only** when the yaml file is being read from a local filesystem. It does not
+support when using via stdin, e.g. `cat linuxkit.yml | linuxkit build -`, or URLs, e.g. `linuxkit build https://example.com/foo.yml`.
+
+The `@pkg:` template currently supports only default `linuxkit pkg` options, i.e. `build.yml` and `tag` options. There
+are no command-line options to override them.
+
+**Note:** The character `@` is reserved in yaml. To use it in the beginning of a string, you must put the entire string in
+quotes.
+
+If you use the template, the actual derived value, and not the initial template, is what will be stored in the final
+image when adding it via:
+
+```yaml
+files:
+  - path: etc/linuxkit.yml
+    metadata: yaml
 ```

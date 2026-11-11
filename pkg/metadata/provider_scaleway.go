@@ -43,7 +43,7 @@ func (p *ProviderScaleway) Probe() bool {
 	// Getting the conf should always work...
 	_, err := scalewayGet(scalewayMetadataURL + "conf")
 	if err != nil {
-		log.Printf(err.Error())
+		log.Print(err.Error())
 		return false
 	}
 
@@ -123,7 +123,7 @@ func (p *ProviderScaleway) Extract() ([]byte, error) {
 	return userData, nil
 }
 
-// exctractInformation returns the extracted information given as parameter from the metadata
+// extractInformation returns the extracted information given as parameter from the metadata
 func (p *ProviderScaleway) extractInformation(metadata []byte, information string) ([]byte, error) {
 	query := strings.ToUpper(information) + "="
 	for _, line := range bytes.Split(metadata, []byte("\n")) {

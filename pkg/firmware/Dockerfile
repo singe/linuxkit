@@ -1,7 +1,7 @@
 # Make modules from a recentish kernel available
-FROM linuxkit/kernel:5.4.28 AS kernel
+FROM linuxkit/kernel:6.18.60 AS kernel
 
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS build
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS build
 RUN apk add --no-cache git kmod
 
 # Clone the firmware repository
@@ -38,7 +38,7 @@ RUN tar xf /kernel.tar
 RUN set -e && \
     for fw in $(find /lib/modules -name \*.ko -exec modinfo --field=firmware {} \;); do \
         mkdir -p "/out/lib/firmware/$(dirname $fw)" && \
-        cp "/linux-firmware-whence/$fw" "/out/lib/firmware/$fw"; \
+        [ -e "/linux-firmware-whence/$fw" ] && cp "/linux-firmware-whence/$fw" "/out/lib/firmware/$fw"; \
     done
 
 FROM scratch

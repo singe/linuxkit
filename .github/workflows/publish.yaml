@@ -8,20 +8,24 @@ on:
 
 jobs:
   packages:
+    if: >
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
     env:
       linuxkit_file: linuxkit-amd64-linux
     name: Publish Changed Packages
     runs-on: ubuntu-latest
     steps:
     - name: Check out code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
     - name: Ensure bin/ directory
       run: mkdir -p bin
     - name: Download linuxkit
-      uses: actions/github-script@v3.1.0
+      uses: actions/github-script@v7
       with:
+        github-token: ${{secrets.GITHUB_TOKEN}}
         script: |
-          var artifacts = await github.actions.listWorkflowRunArtifacts({
+          var artifacts = await github.rest.actions.listWorkflowRunArtifacts({
               owner: context.repo.owner,
               repo: context.repo.repo,
               run_id: ${{github.event.workflow_run.id }},
@@ -29,7 +33,7 @@ jobs:
           var matchArtifact = artifacts.data.artifacts.filter((artifact) => {
             return artifact.name == "${{ env.linuxkit_file }}"
           })[0];
-          var download = await github.actions.downloadArtifact({
+          var download = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner,
               repo: context.repo.repo,
               artifact_id: matchArtifact.id,
@@ -45,7 +49,7 @@ jobs:
         sudo ln -s $(pwd)/bin/${{ env.linuxkit_file }} /usr/local/bin/linuxkit
         /usr/local/bin/linuxkit version
     - name: Restore Package Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.linuxkit/cache/
         key: ${{ runner.os }}-linuxkit-${{ github.sha }}
@@ -63,3 +67,11 @@ jobs:
       # Skip s390x as emulation is unreliable
       run: |
         make OPTIONS="--skip-platforms linux/s390x" -C pkg push PUSHOPTIONS="--nobuild"
+
+    - name: Publish Kernels
+      # this should only push changed ones:
+      #  - unchanged: already in the registry
+      #  - changed: already built and cached, so only will push
+      # No need to skip s390x, since kernel build.yml files all have explicit archs
+      run: |
+        make -C kernel push

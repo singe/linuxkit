@@ -1,11 +1,11 @@
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 as build
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 as build
 
 RUN apk add --no-cache go git musl-dev make curl gcc
 
 ENV GOPATH=/go PATH=$PATH:/go/bin
 ENV GITBASE=github.com/prometheus
 ENV GITREPO=github.com/prometheus/node_exporter
-ENV COMMIT=v0.18.1
+ENV COMMIT=v1.8.2
 
 RUN mkdir -p /go/src/${GITBASE} \
     && cd /go/src/${GITBASE} \

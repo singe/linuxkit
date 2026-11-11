@@ -10,17 +10,51 @@ The LinuxKit kernels are based on the latest stable releases and are
 updated frequently to include bug and security fixes.  For some
 kernels we do carry additional patches, which are mostly back-ported
 fixes from newer kernels. The full kernel source with patches can be
-found on [github](https://github.com/linuxkit/linux). Each kernel
-image is tagged with the full kernel version (e.g.,
-`linuxkit/kernel:4.9.33`) and with the full kernel version plus the
-hash of the files it was created from (git tree hash of the `./kernel`
-directory). For selected kernels (mostly the LTS kernels and latest
-stable kernels) we also compile/push kernels with additional debugging
-enabled. The hub images for these kernels have the `-dbg` suffix in
-the tag. For some kernels, we also provide matching packages
-containing the `perf` utility for debugging and performance tracing.
-The perf package is called `kernel-perf` and is tagged the same way as
-the kernel packages.
+found on [github](https://github.com/linuxkit/linux).
+
+## Kernel Image Naming and Tags
+
+We publish the following kernel images:
+
+* primary kernel
+* debug kernel
+* tools for the specific kernel build - bcc and perf
+* builder image for the specific kernel build, useful for compiling compatible kernel modules
+
+### Primary Kernel Images
+
+Each kernel image is tagged with:
+
+* the full kernel version, e.g. `linuxkit/kernel:6.6.13`. This is a multi-arch index, and should be used whenever possible.
+* the full kernel version plus hash of the files it was created from (git tree hash of the `./kernel` directory), e.g. `6.6.13-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd`. This is a multi-arch index.
+* the full kernel version plus architecture, e.g. `linuxkit/kernel:6.6.13-amd64` or `linuxkit/kernel:6.6.13-arm64`. Each of these is architecture specific.
+* the full kernel version plus hash of the files it was created from (git tree hash of the `./kernel` directory) plus architecture, e.g. `6.6.13-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd-arm64`.
+
+### Debug Kernel Images
+
+With each kernel image, we also publish kernels with additional debugging enabled.
+These have the same image name and the same tags as the primary kernel, with the `-dbg`
+suffix added immediately after the version. E.g.
+
+* `linuxkit/kernel:6.6.13-dbg`
+* `linuxkit/kernel:6.6.13-dbg-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd`
+* `linuxkit/kernel:6.6.13-dbg-amd64`
+* `linuxkit/kernel:6.6.13-dbg-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd-amd64`
+
+### Tools
+
+With each kernel image, we also publish images with various tools. As of this writing,
+those tools are `perf` and `bcc`.
+
+The tools images are named `linuxkit/kernel-<tool>`, followed by the same tags as the
+primary kernel. For example:
+
+* `linuxkit/kernel-perf:6.6.13`
+* `linuxkit/kernel-perf:6.6.13-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd`
+* `linuxkit/kernel-perf:6.6.13-amd64`
+* `linuxkit/kernel-perf:6.6.13-c0d96951e9892a7447a8e7965d2d6bd7e621c3fd-amd64`
+
+## Additional Contributions
 
 In addition to the official images, there are also some
 [scripts](../contrib/foreign-kernels) which repackage kernels packages
@@ -31,7 +65,6 @@ Note now linuxkit also embraces Preempt-RT Linux kernel to support more
 use cases for the promising IoT scenarios. All -rt patches are grabbed from
 https://www.kernel.org/pub/linux/kernel/projects/rt/. But so far we just
 enable it over 4.14.x.
-
 
 ## Loading kernel modules
 
@@ -121,51 +154,251 @@ FROM linuxkit/kernel:5.10.104 AS ksrc
 FROM linuxkit/alpine:2be490394653b7967c250e86fd42cef88de428ba AS build
 ```
 
-## Modifying the kernel config
+## Building and Modifying
 
-Each series of kernels has a config file dedicated to it
-in [../kernel/](../kernel),
-e.g.
-[config-5.10.x-x86_64](../kernel/config-5.10.x-x86_64),
-which is applied during the kernel build process.
+This section describes how to build kernels, and how to modify existing ones.
 
-If you need to modify the kernel config, `make kconfig` in
-the [kernel](../kernel) directory will create a local
-`linuxkit/kconfig` Docker image, which contains the patched sources
-for all support kernels and architectures in
-`/linux-4.<minor>.<rev>`. The kernel source also has the kernel config
-copied to the default kernel config.
+Throughout the document, the terms used are:
 
-Running the image like:
+* kernel version: actual semver version of a kernel, e.g. `6.6.13` or `5.15.27`
+* kernel series: major.minor version of a kernel, e.g. `6.6.x` or `5.15.x`
 
-```sh
-docker run --rm -ti -v $(pwd):/src linuxkit/kconfig
+Throughout this document, the architecture used is the kernel-recognized one, available
+on most systems as `uname -m`, e.g. `aarch64` or `x86_64`. You may be familiar with the alpine
+or golang one, e.g. `amd64` or `amd64`, which are not used here.
+
+**Note:** After changing _and committing any changes_ to the kernel directory or any
+subdirectories, you must update tests, examples and other dependencies. This is done
+via:
+
+```bash
+make update-kernel-yamls
 ```
 
-will give you a interactive shell where you can modify the kernel
-configuration you want, either by editing the config file, or via
-`make menuconfig` etc. Once you are done, save the file as `.config`
-and copy it back to the source tree,
-e.g. `/src/kernel-config-4.9.x-x86_64`.
+Each series of kernels has a dedicated directory in [../kernel/](../kernel),
+e.g. [6.6.x](../kernel/6.6.x) or [5.15.x](../kernel/5.15.x).
+Variants, like rt kernels, have their own directory as well, e.g. [5.11.x-rt](../kernel/5.11.x-rt).
+However, for variants, the patches from _both_ the common kernel, e.g. [5.11.x](../kernel/5.11.x),
+and the variant, e.g. [5.11.x-rt](../kernel/5.11.x-rt), are applied, and the configs from _both_ are combined.
 
-You can also configure other architectures other than the native
-one. For example to configure the arm64 kernel on x86_64, use:
+Within the series-dedicated directory, there are:
 
-```
-make ARCH=arm64 defconfig
-make ARCH=arm64 oldconfig # or menuconfig
-```
+* kernel config file for each architecture named `config-<arch>`, e.g. [6.6.13/config-x86_64](../kernel/6.6.13/config-x86_64), one per target architecture. 
+* optional patches directory, e.g. [6.6.13/patches](../kernel/6.6.13/patches), which contains patches to apply to the kernel source
+
+The config file and patches are applied during the kernel build process.
 
 **Note**: We try to keep the differences between kernel versions and
 architectures to a minimum, so if you make changes to one
 configuration also try to apply it to the others. The script [kconfig-split.py](../scripts/kconfig-split.py) can be used to compare kernel config files. For example:
 
 ```sh
-../scripts/kconfig-split.py config-4.9.x-aarch64 config-4.9.x-x86_64
+../scripts/kconfig-split.py 5.15.x/config-aarch64 5.15.x/config-x86_64
 ```
 
 creates a file with the common and the x86_64 and arm64 specific
-config options for the 4.9.x kernel series.
+config options for the 5.15.x kernel series.
+
+**Note**: The CI pipeline does *not* push out kernel images.
+Anyone modifying a kernel should:
+
+1. Follow the steps below for the desired changes and commit them.
+1. Run appropriate `make build` or variants to ensure that it works.
+1. Open a PR with the changes. This may fail, as the CI pipeline may not have access to the modified kernels.
+1. A maintainer should run `make push` to push out the images.
+1. Run (or rerun) the tests.
+
+#### Build options
+
+The targets and variants for building are as follows:
+
+* `make build` - make all kernels in the version list and their variants
+* `make build-<version>` - make all variants of a specific kernel version
+* `make buildkernel-<version>` - make all variants of a specific kernel version
+* `make buildplainkernel-<version>` - make just the provided version's kernel
+* `make builddebugkernel-<version>` - make just the provided version's debug kernel
+* `make buildtools-<version>` - make just the provided version's tools
+
+To push:
+
+* `make push` - push all kernels in the version list and their variants
+* `make push-<version>` - push all variants of a specific kernel version
+
+Finally, for convenience:
+
+* `make list` - list all kernels in the version list
+
+By default, it builds for all supported architectures. To build just for a specific
+architecture:
+
+```sh
+make build ARCH=amd64
+```
+
+The variable `ARCH` should use the golang variants only, i.e. `amd64` and `arm64`.
+
+To build for multiple architectures, call it multiple times:
+
+```sh
+make build ARCH=amd64
+make build ARCH=arm64
+```
+
+When building for a specific architecture, the build process will use your local
+Docker, passing it `--platforms` for the architecture. If you have a builder on a different
+architecture, e.g. you are running on an Apple Silicon Mac (arm64) and want to build for
+`x86_64` without emulating (which can be very slow), you can use the `BUILDER` variable:
+
+```sh
+make build ARCH=x86_64 BUILDER=remote-amd64-builder
+```
+
+Builder also supports a builder pattern. If `BUILDER` contains the string `{{.Arch}}`,
+it will be replaced with the architecture being built.
+
+For example:
+
+```sh
+make build ARCH=x86_64 BUILDER=remote-{{.Arch}}-builder
+make build ARCH=aarch64 BUILDER=remote-{{.Arch}}-builder
+```
+
+will build `x86_64` on `remote-amd64-builder` and `aarch64` on `remote-arm64-builder`.
+
+Finally, if no `BUILDER` is specified, the build will look for a builder named
+`linuxkit-linux-{{.Arch}}-builder`, e.g. `linuxkit-linux-amd64-builder` or
+`linuxkit-linux-arm64-builder`. If that builder does not exist, it will fall back to
+your local Docker setup.
+
+### Modifying the kernel config
+
+The process of modifying the kernel configuration is as follows:
+
+1. Create a `linuxkit/kconfig` container image: `make kconfig`. This is not pushed out. By default, this will be for your local architecture, but you can override it with `make kconfig ARCH=${ARCH}`, e.g. `make kconfig ARCH=arm64`. The image is tagged with the architecture, e.g. `linuxkit/kconfig:arm64`.
+1. Run a container based on `linuxkit/kconfig`.
+1. In the container, modify the config to suit your needs using normal kernel tools like `make defconfig` or `make menuconfig`.
+1. Save the config from the image.
+
+The `linuxkit/kconfig` image contains the patched sources
+for all support kernels and architectures in `/linux-<major>.<minor>.<rev>`.
+The kernel source also has the kernel config copied to the default kernel config location,
+so that `make menuconfig` and `make defconfig` work correctly.
+
+Run the container as follows:
+
+```sh
+docker run --rm -ti -v $(pwd):/src linuxkit/kconfig:aarch64
+# or
+docker run --rm -ti -v $(pwd):/src linuxkit/kconfig:x86_64
+# or 
+docker run --rm -ti -v $(pwd):/src linuxkit/kconfig:riscv64
+```
+
+This will give you a interactive shell where you can modify the kernel
+configuration you want, while mounting the directory, so that you can save the
+modified config.
+
+To create or modify the config, you must cd to the correct directory,
+e.g.
+
+```sh
+cd /linux-6.6.13
+# or
+cd /linux-5.15.27
+```
+
+Now you can build the config.
+
+When `make defconfig` or `make menuconfig` is done,
+the modified config file will be in `.config`; save the file back to `/src`,
+e.g.
+
+```sh
+cp .config /src/6.6.x/config-x86_64
+```
+
+You can also configure other architectures other than the native
+one. For example to configure the arm64 kernel on x86_64, use:
+
+```sh
+make ARCH=arm64 defconfig
+make ARCH=arm64 oldconfig # or menuconfig
+```
+
+It is important to note that sometimes the configuration can be subtly different
+when running `make defconfig` across architectures. Of note is that `make ARCH=riscv` on
+x86_64 or aarch64 comes out slightly differently than when run natively on riscv64.
+Feel free to try it cross, but do not be surprised if it generates outputs that are not the same.
+
+Note that the generated file **must** be final. When you actually build the kernel,
+it will check that running `make defconfig` will have no changes. If there are changes,
+the build will fail.
+
+The easiest way to check it is to rerun `make defconfig` inside the kconfig container.
+
+1. Finish your creation of the config file, as above.
+1. Copy the `.config` file to the target location, as above.
+1. Copy the `.config` file to the source location for defconfig, e.g. `cp .config arch/x86/configs/x86_64_config` or `cp. config /linux/arch/arm64/configs/defconfig`
+1. Run `make defconfig` again, and check that there are no changes, e.g. `diff .config arch/x86/configs/x86_64_config` or `diff .config /linux/arch/arm64/configs/defconfig`
+
+If there are no differences, then you can commit the new config file.
+
+Finally, test that you can build the kernel with that config as `make build-<version>`, e.g. `make build-5.15.148`.
+
+## Adding a new kernel version
+
+If you want to add a new kernel version within an existing series, e.g. `5.15.27` already exists
+and you want to add (or replace it with) `5.15.148`, apply the following process.
+
+1. Determine the series, i.e. the kernel major.minor version, followed by `x`. E.g. for `5.15.148`, the series is `5.15.x`.
+1. Modify the `KERNEL_VERSION` in the `build-args` file in the series directory to the new version. E.g. `5.15.x/build-args`.
+1. Create a new `linuxkit/kconfig` container image: `make kconfig`. This is not pushed out.
+1. Run a container based on `linuxkit/kconfig`.
+```sh
+docker run --rm -ti -v $(pwd):/src linuxkit/kconfig
+```
+1. In the container, change directory to the kernel source directory for the new version, e.g. `cd /linux-5.15.148`.
+1. Copy the `.config` file to the source location for defconfig, e.g. `cp /src/5.15.x/config-x86_64 arch/x86/configs/x86_64_defconfig`
+1. Run `make defconfig` to create the default config file.
+1. If the config file has changed, copy it out of the container and check it in, e.g. `cp .config /src/5.15.x/config-x86_64`.
+1. Repeat for other architectures.
+1. Commit the changed config files.
+1. Test that you can build the kernel with that config as `make build-<version>`, e.g. `make build-5.15.148`.
+
+## Adding a new kernel series
+
+To add a new kernel series, you need to:
+
+1. Create new directory for the series, e.g. `6.7.x`
+1. Create config files for each architecture in that directory
+1. Optionally, create a `patches/` subdirectory in that directory with any patches to add
+1. Create a `build-args` file in that directory with at least the following settings:
+```bash
+KERNEL_VERSION=<version>
+KERNEL_SERIES=<series>
+BUILD_IMAGE=linuxkit/alpine:<builder>
+```
+
+Since the last major series likely is the best basis for the new one, subject to additional modifications, you can use
+the previous one as a starting point.
+
+1. Make the directory for the new series, e.g. `mkdir 7.0.x`
+1. Create a new `linuxkit/kconfig` container image: `make kconfig`. This is not pushed out.
+1. Run a container based on `linuxkit/kconfig`.
+```sh
+docker run --rm -ti -v $(pwd):/src linuxkit/kconfig
+```
+1. In the container, change directory to the kernel source directory for the new version, e.g. `cd /linux-7.0.5`.
+1. Copy the existing config file for the previous series, e.g. `cp /src/6.6.x/config-x86_64 .config`.
+1. Run `make oldconfig` to create the config file for the new series from the old one. Answer any questions.
+1. Save the newly generated config file `.config` to the source directory, e.g. `cp .config /src/7.0.x/config-x86_64`.
+1. Repeat for other architectures.
+1. Commit the new config files.
+1. Test that you can build the kernel with that config as `make build-<version>`, e.g. `make build-7.0.5`.
+
+In addition, there are tests that are applied to a specific kernel version, notably the tests in
+[020_kernel](../test/cases/020_kernel/). You will need to add a new test case for the new series,
+copying an existing one and modifying it as needed.
 
 ## Building and using custom kernels
 
@@ -391,3 +624,31 @@ Alpine `zfs` utilities are available in `linuxkit/alpine` and the
 version of the kernel module should match the version of the
 tools. The container where you run the `zfs` tools might also need
 `CAP_SYS_MODULE` to be able to load the kernel modules.
+
+## Kernels in examples and tests
+
+All of the linuxkit `.yml` files use the images from `linuxkit/kernel:<tag>`.
+
+When updating the kernel, you run commands to update the tests. The updates to any file that contains
+references to `linuxkit/kernel` in this repository work as follows:
+
+- Semver tags are replaced by the most recent kernel version. For example, `linuxkit/kernel:5.10.104` will become `6.6.13` when available, and then `6.6.15`, and then `7.0.1`, etc. The highest semver always is used.
+- Semver+hash tags are replaced by the most recent hash and patch version for that series. For example, `linuxkit/kernel:5.10.104-abcdef1234` will become `5.10.104-aaaa54232` (same semver, newer hash), and then `5.10.105-bbbb12345` (newer semver, newer hash), etc. The highest semver+hash always is used.
+
+This is not an inherent characteristic of `linuxkit` tool, which **never** will change your `.yml` files. It is part of
+the update process for yml files _in this repository_.
+
+The net of the above is the following rule:
+
+* If you want a reference to a specific kernel series, e.g. a test or example that works only with `5.10.x`, then use a specific hash, e.g. `linuxkit/kernel:5.10.104-abcdef1234`. The hash and patch version will update, but not more. The most common use case for this is kernel version-specific tests.
+* If you want a reference to the most recent kernel, whatever version it is, then use a semver tag, e.g. `linuxkit/kernel:6.6.13`. The most common use case for this is examples that work with any kernel version, which is the vast majority of cases.
+
+You can get the current hash by executing the following:
+
+```bash
+$ cd kernel
+$ make tag-plain-kernel-<version>
+# for example:
+$ make tag-plain-kernel-6.6.13
+linuxkit/kernel:6.6.13-3a8b3faf92390265b1fbee792b9a3fe14d14c26e
+```

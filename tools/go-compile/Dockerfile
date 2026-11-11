@@ -1,4 +1,4 @@
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS mirror
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS mirror
 
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 RUN apk add --no-cache --initdb -p /out \
@@ -17,7 +17,7 @@ RUN [ $(uname -m) = aarch64 ] && apk add --no-cache --initdb -p /out gcc || true
 RUN rm -rf /out/etc/apk /out/lib/apk /out/var/cache
 
 # installing golangci-lint
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /out/go/bin v1.50.1
+RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b /out/go/bin v2.0.2
 
 
 FROM scratch

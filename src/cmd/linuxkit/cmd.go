@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/registry"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/util"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v2"
@@ -43,8 +45,12 @@ func readConfig() {
 
 func newCmd() *cobra.Command {
 	var (
-		flagQuiet   bool
-		flagVerbose bool
+		flagQuiet       bool
+		flagVerbose     int
+		flagVerboseName = "verbose"
+		mirrorsRaw      []string
+		certFiles       []string
+		dockerContext   string
 	)
 	cmd := &cobra.Command{
 		Use:               "linuxkit",
@@ -53,8 +59,56 @@ func newCmd() *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			readConfig()
 
+			// prepend mirrors from env var so CLI flags take precedence (last SetProxy call wins)
+			if envMirrors := os.Getenv(envVarMirror); envMirrors != "" {
+				envList := strings.FieldsFunc(envMirrors, func(r rune) bool { return r == ',' || r == ' ' })
+				mirrorsRaw = append(envList, mirrorsRaw...)
+			}
+
+			// convert the provided mirrors to a map
+			for _, m := range mirrorsRaw {
+				if m == "" {
+					continue
+				}
+				parts := strings.SplitN(m, "=", 2)
+				// if no equals sign, use the whole string as the mirror for all registries
+				// not otherwise specified
+				var key, value string
+				if len(parts) == 1 {
+					key = "*"
+					value = parts[0]
+				} else {
+					key = parts[0]
+					value = parts[1]
+				}
+				// value must start with http:// or https://
+				if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+					return fmt.Errorf("mirror %q must start with http:// or https://", value)
+				}
+				// special logic for docker.io because of its odd references
+				if key == "docker.io" || key == "docker.io/" {
+					for _, prefix := range []string{"docker.io", "index.docker.io", "registry-1.docker.io"} {
+						registry.SetProxy(prefix, value)
+					}
+				} else {
+					registry.SetProxy(key, value)
+				}
+			}
+
+			for _, f := range certFiles {
+				if f == "" {
+					continue
+				}
+				cert, err := os.ReadFile(f)
+				if err != nil {
+					return fmt.Errorf("failed to read certificate file %q: %w", f, err)
+				}
+				// Add the certificate file to the registry
+				registry.AddCert(cert)
+			}
+
 			// Set up logging
-			return util.SetupLogging(flagQuiet, flagVerbose)
+			return util.SetupLogging(flagQuiet, flagVerbose, cmd.Flag(flagVerboseName).Changed)
 		},
 	}
 
@@ -67,9 +121,18 @@ func newCmd() *cobra.Command {
 	cmd.AddCommand(serveCmd())
 	cmd.AddCommand(versionCmd())
 
+	cmd.PersistentFlags().StringVar(&dockerContext, "context", "", "Docker context for Docker operations; overrides DOCKER_CONTEXT, DOCKER_HOST, and automatic desktop-linux/default selection (per-platform --builders mappings take precedence)")
 	cmd.PersistentFlags().StringVar(&cacheDir, "cache", defaultLinuxkitCache(), fmt.Sprintf("Directory for caching and finding cached image, overrides env var %s", envVarCacheDir))
+	cmd.PersistentFlags().StringArrayVar(&mirrorsRaw, "mirror", nil, fmt.Sprintf("Mirror to use for pulling images, format is <registry>=<mirror>, e.g. docker.io=http://mymirror.io, or just http://mymirror.io for all not otherwise specified; must include protocol. Can be provided multiple times. Also read from env var %s (space/comma-separated list); CLI flags take precedence.", envVarMirror))
+	cmd.PersistentFlags().StringArrayVar(&certFiles, "cert-file", nil, "Path to certificate files to use for pulling images, can be provided multiple times. Will augment system-provided certs.")
 	cmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Quiet execution")
-	cmd.PersistentFlags().BoolVarP(&flagVerbose, "verbose", "v", false, "Verbose execution")
+	cmd.PersistentFlags().IntVarP(&flagVerbose, flagVerboseName, "v", 1, "Verbosity of logging: 0 = quiet, 1 = info, 2 = debug, 3 = trace. Default is info. Setting it explicitly will create structured logging lines.")
 
 	return cmd
+}
+
+// dockerContextFlag passes the root context override to Docker-aware libraries.
+func dockerContextFlag(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("context")
+	return value
 }

@@ -1,24 +1,24 @@
 package pkglib
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/reference"
-	dockertypes "github.com/docker/docker/api/types"
-	registry "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/pkg/reference"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
-	lktspec "github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
 	buildkitClient "github.com/moby/buildkit/client"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -40,30 +40,168 @@ type buildLog struct {
 	platform      string
 }
 
-func (d *dockerMocker) tag(ref, tag string) error {
+func (d *dockerMocker) Tag(ref, tag string) error {
 	if !d.enableTag {
 		return errors.New("tags not allowed")
 	}
 	d.images[tag] = d.images[ref]
 	return nil
 }
-func (d *dockerMocker) contextSupportCheck() error {
+func (d *dockerMocker) ContextSupportCheck() error {
 	if d.supportContexts {
 		return nil
 	}
 	return errors.New("contexts not supported")
 }
-func (d *dockerMocker) builder(_ context.Context, _, _, _ string, _ bool) (*buildkitClient.Client, error) {
+func (d *dockerMocker) Builder(_ context.Context, _, _ string) (*buildkitClient.Client, error) {
 	return nil, fmt.Errorf("not implemented")
 }
-func (d *dockerMocker) build(ctx context.Context, tag, pkg, dockerContext, builderImage, platform string, builderRestart bool, c spec.CacheProvider, r io.Reader, stdout io.Writer, imageBuildOpts dockertypes.ImageBuildOptions) error {
+func (d *dockerMocker) Build(ctx context.Context, tag, pkg, dockerContext, platform string, preCacheImages bool, c spec.CacheProvider, r io.Reader, stdout io.Writer, sbomScan bool, sbomScannerImage, progress string, imageBuildOpts spec.ImageBuildOptions) error {
 	if !d.enableBuild {
 		return errors.New("build disabled")
 	}
 	d.builds = append(d.builds, buildLog{tag, pkg, dockerContext, platform})
+	// must create a tar stream that looks somewhat normal to pass to stdout
+	// what we need:
+	// a config blob (random data)
+	// a layer blob (random data)
+	// a manifest blob (from the above)
+	// an index blob (points to the manifest)
+	// index.json (points to the index)
+	tw := tar.NewWriter(stdout)
+	defer func() {
+		_ = tw.Close()
+	}()
+	buf := make([]byte, 128)
+
+	var (
+		configHash, layerHash, manifestHash, indexHash v1.Hash
+		configSize, layerSize, manifestSize, indexSize int64
+	)
+	// config blob
+	if _, err := rand.Read(buf); err != nil {
+		return err
+	}
+	hash, _, err := v1.SHA256(bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("blobs/sha256/%s", hash.Hex), Size: int64(len(buf))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(buf); err != nil {
+		return err
+	}
+	configHash = hash
+	configSize = int64(len(buf))
+
+	// layer blob
+	if _, err := rand.Read(buf); err != nil {
+		return err
+	}
+	hash, _, err = v1.SHA256(bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("blobs/sha256/%s", hash.Hex), Size: int64(len(buf))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(buf); err != nil {
+		return err
+	}
+	layerHash = hash
+	layerSize = int64(len(buf))
+
+	// manifest
+	manifest := v1.Manifest{
+		Config: v1.Descriptor{
+			MediaType: types.OCIConfigJSON,
+			Size:      configSize,
+			Digest:    configHash,
+		},
+		Layers: []v1.Descriptor{
+			{
+				MediaType: types.OCILayer,
+				Size:      layerSize,
+				Digest:    layerHash,
+			},
+		},
+	}
+	b, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	hash, _, err = v1.SHA256(bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("blobs/sha256/%s", hash.Hex), Size: int64(len(b))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(b); err != nil {
+		return err
+	}
+	manifestHash = hash
+	manifestSize = int64(len(b))
+
+	// index
+	index := v1.IndexManifest{
+		MediaType: types.OCIImageIndex,
+		Manifests: []v1.Descriptor{
+			{
+				MediaType: types.OCIManifestSchema1,
+				Size:      manifestSize,
+				Digest:    manifestHash,
+			},
+		},
+		SchemaVersion: 2,
+	}
+	b, err = json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	hash, _, err = v1.SHA256(bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("blobs/sha256/%s", hash.Hex), Size: int64(len(b))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(b); err != nil {
+		return err
+	}
+	indexHash = hash
+	indexSize = int64(len(b))
+
+	// index.json
+	index = v1.IndexManifest{
+		MediaType: types.OCIImageIndex,
+		Manifests: []v1.Descriptor{
+			{
+				MediaType: types.OCIImageIndex,
+				Size:      indexSize,
+				Digest:    indexHash,
+				Annotations: map[string]string{
+					imagespec.AnnotationRefName: tag,
+					images.AnnotationImageName:  tag,
+				},
+			},
+		},
+		SchemaVersion: 2,
+	}
+	b, err = json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	if err := tw.WriteHeader(&tar.Header{Name: "index.json", Size: int64(len(b))}); err != nil {
+		return err
+	}
+	if _, err := tw.Write(b); err != nil {
+		return err
+	}
 	return nil
 }
-func (d *dockerMocker) save(tgt string, refs ...string) error {
+func (d *dockerMocker) Save(tgt string, refs ...string) error {
 	var b []byte
 	for _, ref := range refs {
 		if data, ok := d.images[ref]; ok {
@@ -74,7 +212,7 @@ func (d *dockerMocker) save(tgt string, refs ...string) error {
 	}
 	return os.WriteFile(tgt, b, 0666)
 }
-func (d *dockerMocker) load(src io.Reader) error {
+func (d *dockerMocker) Load(src io.Reader) error {
 	b, err := io.ReadAll(src)
 	if err != nil {
 		return err
@@ -82,15 +220,17 @@ func (d *dockerMocker) load(src io.Reader) error {
 	d.images[d.fixedReadName] = b
 	return nil
 }
-func (d *dockerMocker) pull(img string) (bool, error) {
+func (d *dockerMocker) Pull(img string) (bool, error) {
 	if d.enablePull {
 		b := make([]byte, 256)
-		rand.Read(b)
+		_, _ = rand.Read(b)
 		d.images[img] = b
 		return true, nil
 	}
 	return false, errors.New("failed to pull")
 }
+
+var _ spec.CacheProvider = &cacheMocker{}
 
 type cacheMocker struct {
 	enablePush             bool
@@ -98,18 +238,39 @@ type cacheMocker struct {
 	enableImagePull        bool
 	enableImageLoad        bool
 	enableIndexWrite       bool
-	images                 map[string][]registry.Descriptor
+	images                 map[string][]v1.Descriptor
 	hashes                 map[string][]byte
+	registryImages         map[string][]v1.Descriptor
 }
 
-func (c *cacheMocker) ImagePull(ref *reference.Spec, trustedRef, architecture string, alwaysPull bool) (lktspec.ImageSource, error) {
+func (c *cacheMocker) ImagePull(ref *reference.Spec, platforms []imagespec.Platform, alwaysPull bool) error {
 	if !c.enableImagePull {
-		return nil, errors.New("ImagePull disabled")
+		return errors.New("ImagePull disabled")
 	}
-	// make some random data for a layer
+	image := ref.String()
+	// simulate pulling from registry: copy registry descriptors into local cache
+	if c.registryImages != nil {
+		if descs, ok := c.registryImages[image]; ok {
+			for _, d := range descs {
+				c.appendImage(image, d)
+			}
+			return nil
+		}
+	}
+	// fallback: make some random data for a layer
 	b := make([]byte, 256)
-	rand.Read(b)
-	return c.imageWriteStream(ref, architecture, bytes.NewReader(b))
+	_, _ = rand.Read(b)
+	descs, err := c.imageWriteStream(bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	if len(descs) != 1 {
+		return fmt.Errorf("expected 1 descriptor, got %d", len(descs))
+	}
+	if len(platforms) != 1 {
+		return fmt.Errorf("cache does not support multiple platforms %s", platforms)
+	}
+	return nil
 }
 
 func (c *cacheMocker) ImageInCache(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
@@ -127,71 +288,112 @@ func (c *cacheMocker) ImageInCache(ref *reference.Spec, trustedRef, architecture
 }
 
 func (c *cacheMocker) ImageInRegistry(ref *reference.Spec, trustedRef, architecture string) (bool, error) {
+	if c.registryImages == nil {
+		return false, nil
+	}
+	image := ref.String()
+	descs, ok := c.registryImages[image]
+	if !ok {
+		return false, nil
+	}
+	for _, d := range descs {
+		if d.Platform != nil && d.Platform.Architecture == architecture {
+			return true, nil
+		}
+	}
 	return false, nil
 }
 
-func (c *cacheMocker) ImageLoad(ref *reference.Spec, architecture string, r io.Reader) (lktspec.ImageSource, error) {
+func (c *cacheMocker) ImageLoad(r io.Reader) ([]v1.Descriptor, error) {
 	if !c.enableImageLoad {
 		return nil, errors.New("ImageLoad disabled")
 	}
-	return c.imageWriteStream(ref, architecture, r)
+	return c.imageWriteStream(r)
 }
 
-func (c *cacheMocker) imageWriteStream(ref *reference.Spec, architecture string, r io.Reader) (lktspec.ImageSource, error) {
-	image := fmt.Sprintf("%s-%s", ref.String(), architecture)
+func (c *cacheMocker) imageWriteStream(r io.Reader) ([]v1.Descriptor, error) {
+	var (
+		image string
+		size  int64
+		hash  v1.Hash
+	)
 
-	// make some random data for a layer
-	b, err := io.ReadAll(r)
+	tarBytes, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("error reading data: %v", err)
 	}
-	hash, size, err := registry.SHA256(bytes.NewReader(b))
-	if err != nil {
-		return nil, fmt.Errorf("error calculating hash of layer: %v", err)
-	}
-	c.assignHash(hash.String(), b)
+	var (
+		tr    = tar.NewReader(bytes.NewReader(tarBytes))
+		index bytes.Buffer
+	)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			return nil, err
+		}
 
-	im := registry.Manifest{
-		MediaType: types.OCIManifestSchema1,
-		Layers: []registry.Descriptor{
-			{MediaType: types.OCILayer, Size: size, Digest: hash},
-		},
-		SchemaVersion: 2,
+		filename := header.Name
+		switch {
+		case filename == "index.json":
+			// any errors should stop and get reported
+			if _, err := io.Copy(&index, tr); err != nil {
+				return nil, fmt.Errorf("error reading data for file %s : %v", filename, err)
+			}
+		case strings.HasPrefix(filename, "blobs/sha256/"):
+			// must have a file named blob/sha256/<hash>
+			parts := strings.Split(filename, "/")
+			// if we had a file that is just the directory, ignore it
+			if len(parts) != 3 {
+				continue
+			}
+			hash, err := v1.NewHash(fmt.Sprintf("%s:%s", parts[1], parts[2]))
+			if err != nil {
+				// malformed file
+				return nil, fmt.Errorf("invalid hash filename for %s: %v", filename, err)
+			}
+			b, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("error reading data for file %s : %v", filename, err)
+			}
+			c.assignHash(hash.String(), b)
+		}
+	}
+	if index.Len() != 0 {
+		im, err := v1.ParseIndexManifest(&index)
+		if err != nil {
+			return nil, fmt.Errorf("error reading index.json")
+		}
+		for _, desc := range im.Manifests {
+			if imgName, ok := desc.Annotations[images.AnnotationImageName]; ok {
+				image = imgName
+				size = desc.Size
+				hash = desc.Digest
+				break
+			}
+		}
 	}
 
-	// write the updated index, remove the old one
-	b, err = json.Marshal(im)
-	if err != nil {
-		return nil, fmt.Errorf("unable to marshal new image to json: %v", err)
-	}
-	hash, size, err = registry.SHA256(bytes.NewReader(b))
-	if err != nil {
-		return nil, fmt.Errorf("error calculating hash of index json: %v", err)
-	}
-	c.assignHash(hash.String(), b)
-	desc := registry.Descriptor{
+	desc := v1.Descriptor{
 		MediaType: types.OCIManifestSchema1,
 		Size:      size,
 		Digest:    hash,
 		Annotations: map[string]string{
 			imagespec.AnnotationRefName: image,
 		},
-		Platform: &registry.Platform{
-			OS:           "linux",
-			Architecture: architecture,
-		},
 	}
 	c.appendImage(image, desc)
-
-	return c.NewSource(ref, architecture, &desc), nil
+	return []v1.Descriptor{desc}, nil
 }
 
-func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...registry.Descriptor) (lktspec.ImageSource, error) {
+func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...v1.Descriptor) error {
 	if !c.enableIndexWrite {
-		return nil, errors.New("disabled")
+		return errors.New("disabled")
 	}
 	image := ref.String()
-	im := registry.IndexManifest{
+	im := v1.IndexManifest{
 		MediaType:     types.OCIImageIndex,
 		Manifests:     descriptors,
 		SchemaVersion: 2,
@@ -200,14 +402,14 @@ func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...registry.De
 	// write the updated index, remove the old one
 	b, err := json.Marshal(im)
 	if err != nil {
-		return nil, fmt.Errorf("unable to marshal new index to json: %v", err)
+		return fmt.Errorf("unable to marshal new index to json: %v", err)
 	}
-	hash, size, err := registry.SHA256(bytes.NewReader(b))
+	hash, size, err := v1.SHA256(bytes.NewReader(b))
 	if err != nil {
-		return nil, fmt.Errorf("error calculating hash of index json: %v", err)
+		return fmt.Errorf("error calculating hash of index json: %v", err)
 	}
 	c.assignHash(hash.String(), b)
-	desc := registry.Descriptor{
+	desc := v1.Descriptor{
 		MediaType: types.OCIImageIndex,
 		Size:      size,
 		Digest:    hash,
@@ -217,9 +419,9 @@ func (c *cacheMocker) IndexWrite(ref *reference.Spec, descriptors ...registry.De
 	}
 	c.appendImage(image, desc)
 
-	return c.NewSource(ref, "", &desc), nil
+	return nil
 }
-func (c *cacheMocker) Push(name string, withManifest bool) error {
+func (c *cacheMocker) Push(name, remoteName string, withManifest, override bool) error {
 	if !c.enablePush {
 		return errors.New("push disabled")
 	}
@@ -229,29 +431,28 @@ func (c *cacheMocker) Push(name string, withManifest bool) error {
 	return nil
 }
 
-func (c *cacheMocker) DescriptorWrite(ref *reference.Spec, desc registry.Descriptor) (lktspec.ImageSource, error) {
+func (c *cacheMocker) DescriptorWrite(image string, desc v1.Descriptor) error {
 	if !c.enabledDescriptorWrite {
-		return nil, errors.New("descriptor disabled")
+		return errors.New("descriptor disabled")
 	}
 	var (
-		image = ref.String()
-		im    = registry.IndexManifest{
+		im = v1.IndexManifest{
 			MediaType:     types.OCIImageIndex,
-			Manifests:     []registry.Descriptor{desc},
+			Manifests:     []v1.Descriptor{desc},
 			SchemaVersion: 2,
 		}
 	)
 	// write the updated index, remove the old one
 	b, err := json.Marshal(im)
 	if err != nil {
-		return nil, fmt.Errorf("unable to marshal new index to json: %v", err)
+		return fmt.Errorf("unable to marshal new index to json: %v", err)
 	}
-	hash, size, err := registry.SHA256(bytes.NewReader(b))
+	hash, size, err := v1.SHA256(bytes.NewReader(b))
 	if err != nil {
-		return nil, fmt.Errorf("error calculating hash of index json: %v", err)
+		return fmt.Errorf("error calculating hash of index json: %v", err)
 	}
 	c.assignHash(hash.String(), b)
-	root := registry.Descriptor{
+	root := v1.Descriptor{
 		MediaType: types.OCIImageIndex,
 		Size:      size,
 		Digest:    hash,
@@ -261,17 +462,17 @@ func (c *cacheMocker) DescriptorWrite(ref *reference.Spec, desc registry.Descrip
 	}
 	c.appendImage(image, root)
 
-	return c.NewSource(ref, "", &root), nil
+	return nil
 }
-func (c *cacheMocker) FindDescriptor(ref *reference.Spec) (*registry.Descriptor, error) {
+func (c *cacheMocker) FindDescriptor(ref *reference.Spec) (*v1.Descriptor, error) {
 	name := ref.String()
 	if desc, ok := c.images[name]; ok && len(desc) > 0 {
 		return &desc[0], nil
 	}
-	return nil, fmt.Errorf("not found %s", name)
+	return nil, nil
 }
-func (c *cacheMocker) NewSource(ref *reference.Spec, architecture string, descriptor *registry.Descriptor) lktspec.ImageSource {
-	return cacheMockerSource{c, ref, architecture, descriptor}
+func (c *cacheMocker) NewSource(ref *reference.Spec, platform *imagespec.Platform, descriptor *v1.Descriptor) spec.ImageSource {
+	return cacheMockerSource{c, ref, platform, descriptor}
 }
 func (c *cacheMocker) assignHash(hash string, b []byte) {
 	if c.hashes == nil {
@@ -279,9 +480,9 @@ func (c *cacheMocker) assignHash(hash string, b []byte) {
 	}
 	c.hashes[hash] = b
 }
-func (c *cacheMocker) appendImage(image string, root registry.Descriptor) {
+func (c *cacheMocker) appendImage(image string, root v1.Descriptor) {
 	if c.images == nil {
-		c.images = map[string][]registry.Descriptor{}
+		c.images = map[string][]v1.Descriptor{}
 	}
 	c.images[image] = append(c.images[image], root)
 }
@@ -291,11 +492,19 @@ func (c *cacheMocker) Store() (content.Store, error) {
 	return nil, errors.New("unsupported")
 }
 
+func (c *cacheMocker) GetContent(hash v1.Hash) (io.ReadCloser, error) {
+	content, ok := c.hashes[hash.String()]
+	if !ok {
+		return nil, fmt.Errorf("no content found for hash: %s", hash.String())
+	}
+	return io.NopCloser(bytes.NewReader(content)), nil
+}
+
 type cacheMockerSource struct {
-	c            *cacheMocker
-	ref          *reference.Spec
-	architecture string
-	descriptor   *registry.Descriptor
+	c          *cacheMocker
+	ref        *reference.Spec
+	platform   *imagespec.Platform
+	descriptor *v1.Descriptor
 }
 
 func (c cacheMockerSource) Config() (imagespec.ImageConfig, error) {
@@ -310,11 +519,23 @@ func (c cacheMockerSource) V1TarReader(overrideName string) (io.ReadCloser, erro
 		return nil, fmt.Errorf("no image found with ref: %s", c.ref.String())
 	}
 	b := make([]byte, 256)
-	rand.Read(b)
+	_, _ = rand.Read(b)
 	return io.NopCloser(bytes.NewReader(b)), nil
 }
-func (c cacheMockerSource) Descriptor() *registry.Descriptor {
+func (c cacheMockerSource) OCITarReader(overrideName string) (io.ReadCloser, error) {
+	_, found := c.c.images[c.ref.String()]
+	if !found {
+		return nil, fmt.Errorf("no image found with ref: %s", c.ref.String())
+	}
+	b := make([]byte, 256)
+	_, _ = rand.Read(b)
+	return io.NopCloser(bytes.NewReader(b)), nil
+}
+func (c cacheMockerSource) Descriptor() *v1.Descriptor {
 	return c.descriptor
+}
+func (c cacheMockerSource) SBoMs() ([]io.ReadCloser, error) {
+	return nil, nil
 }
 
 func TestBuild(t *testing.T) {
@@ -331,9 +552,9 @@ func TestBuild(t *testing.T) {
 		err     string
 	}{
 		{"invalid tag", Pkg{image: "docker.io/foo/bar:abc:def:ghi"}, nil, nil, &dockerMocker{}, &cacheMocker{}, "could not resolve references"},
-		{"not at head", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "foo"}, nil, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "Cannot build from commit hash != HEAD"},
+		{"not at head", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "foo"}, nil, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "cannot build from commit hash != HEAD"},
 		{"no build cache", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, nil, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "must provide linuxkit build cache"},
-		{"unsupported contexts", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "contexts not supported, check docker version"},
+		{"unsupported contexts", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportContexts: false}, &cacheMocker{}, "cannot inspect Docker contexts"},
 		{"load docker without local platform", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir), WithBuildTargetDockerCache()}, []string{"amd64", "arm64"}, &dockerMocker{supportContexts: true, enableBuild: true, images: map[string][]byte{}, enableTag: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
 		{"amd64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"amd64"}, &dockerMocker{supportContexts: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
 		{"arm64", Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64", "arm64"}, commitHash: "HEAD"}, []BuildOpt{WithBuildCacheDir(cacheDir)}, []string{"arm64"}, &dockerMocker{supportContexts: true, enableBuild: true}, &cacheMocker{enableImagePull: false, enableImageLoad: true, enableIndexWrite: true}, ""},
@@ -350,6 +571,7 @@ func TestBuild(t *testing.T) {
 				}
 				opts = append(opts, WithBuildPlatforms(targets...))
 			}
+			tt.p.dockerfile = "testdata/Dockerfile"
 			err := tt.p.Build(opts...)
 			switch {
 			case (tt.err == "" && err != nil) || (tt.err != "" && err == nil) || (tt.err != "" && err != nil && !strings.HasPrefix(err.Error(), tt.err)):
@@ -380,6 +602,52 @@ func TestBuild(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPushReleaseImageInRegistry tests that push+release works when the image
+// already exists in the registry but not in the local cache. This is a
+// regression test for a nil pointer dereference introduced in 4129cc79.
+func TestPushReleaseImageInRegistry(t *testing.T) {
+	cacheDir := "somecachedir"
+	// simulate an image that exists in the registry for amd64
+	// FullTag() for org:"foo", image:"bar" with no tag set is "docker.io/foo/bar:latest"
+	registryDescs := map[string][]v1.Descriptor{
+		"docker.io/foo/bar:latest": {
+			{
+				MediaType: types.OCIManifestSchema1,
+				Size:      100,
+				Digest:    v1.Hash{Algorithm: "sha256", Hex: "aabbccdd"},
+				Platform:  &v1.Platform{Architecture: "amd64", OS: "linux"},
+			},
+		},
+	}
+	c := &cacheMocker{
+		enablePush:             true,
+		enabledDescriptorWrite: true,
+		enableImagePull:        true,
+		enableIndexWrite:       true,
+		registryImages:         registryDescs,
+	}
+	runner := &dockerMocker{supportContexts: true}
+	p := Pkg{org: "foo", image: "bar", hash: "abc", arches: []string{"amd64"}, commitHash: "HEAD", dockerfile: "testdata/Dockerfile"}
+	opts := []BuildOpt{
+		WithBuildCacheDir(cacheDir),
+		WithBuildPush(),
+		WithRelease("snapshot"),
+		WithBuildDocker(runner),
+		WithBuildCacheProvider(c),
+		WithBuildOutputWriter(io.Discard),
+		WithBuildPlatforms(imagespec.Platform{OS: "linux", Architecture: "amd64"}),
+	}
+	err := p.Build(opts...)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	// verify the release tag was written to cache
+	relTag := "docker.io/foo/bar:snapshot"
+	if _, ok := c.images[relTag]; !ok {
+		t.Errorf("expected release tag %q to be written to cache", relTag)
 	}
 }
 

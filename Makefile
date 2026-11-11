@@ -4,7 +4,7 @@ VERSION="v0.8+"
 TEST_SUITE ?=
 TEST_SHARD ?=
 
-GO_COMPILE=linuxkit/go-compile:c97703655e8510b7257ffc57f25e40337b0f0813
+GO_COMPILE=linuxkit/go-compile:985a9db72a7e6941de5e1eb71c2b41b76bf0556f
 
 ifeq ($(OS),Windows_NT)
 LINUXKIT?=$(CURDIR)/bin/linuxkit.exe
@@ -34,7 +34,7 @@ export VERSION GO_COMPILE GOOS GOARCH LOCAL_TARGET LINUXKIT
 default: linuxkit $(RTF)
 all: default
 
-RTF_COMMIT=b74a4f7c78e5cddcf7e6d2e6be7be312b9f645fc
+RTF_COMMIT=1118e08445438dc37ec62b4c1e216918b3d804d2
 RTF_CMD=github.com/linuxkit/rtf/cmd
 RTF_VERSION=0.0
 $(RTF): tmp_rtf_bin.tar | bin
@@ -119,18 +119,27 @@ endif
 		./scripts/update-component-sha.sh --image $${img}$(image); \
 	done
 
-.PHONY: build-all-targets
-build-all-targets: bin
-	$(MAKE) GOOS=darwin GOARCH=arm64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-darwin-arm64 local-build
-	file bin/linuxkit-darwin-arm64
-	$(MAKE) GOOS=darwin GOARCH=amd64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-darwin-amd64 local-build
-	file bin/linuxkit-darwin-amd64
+.PHONY: build-targets-all build-targets-linux build-targets-windows build-targets-macos checksum-targets
+
+build-targets-all: build-targets-linux build-targets-windows build-targets-macos
+
+build-targets-linux: bin
 	$(MAKE) GOOS=linux GOARCH=arm64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-linux-arm64 local-build
 	file bin/linuxkit-linux-arm64
 	$(MAKE) GOOS=linux GOARCH=amd64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-linux-amd64 local-build
 	file bin/linuxkit-linux-amd64
 	$(MAKE) GOOS=linux GOARCH=s390x LOCAL_TARGET=$(CURDIR)/bin/linuxkit-linux-s390x local-build
 	file bin/linuxkit-linux-s390x
+
+build-targets-windows: bin
 	$(MAKE) GOOS=windows GOARCH=amd64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-windows-amd64.exe local-build
 	file bin/linuxkit-windows-amd64.exe
+
+build-targets-macos: bin
+	$(MAKE) GOOS=darwin GOARCH=arm64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-darwin-arm64 local-build
+	file bin/linuxkit-darwin-arm64
+	$(MAKE) GOOS=darwin GOARCH=amd64 LOCAL_TARGET=$(CURDIR)/bin/linuxkit-darwin-amd64 local-build
+	file bin/linuxkit-darwin-amd64
+
+checksum-targets: bin
 	cd bin && openssl sha256 -r linuxkit-* | tr -d '*' > checksums.txt

@@ -12,9 +12,11 @@ import (
 
 func pkgBuilderCmd() *cobra.Command {
 	var (
-		builders     string
-		platforms    string
-		builderImage string
+		builders          string
+		builderName       = flagOverEnvVarOverDefaultString{def: pkglib.DefaultBuilderName(), envVar: envVarBuilderName}
+		platforms         string
+		builderImage      string
+		builderConfigPath string
 	)
 	cmd := &cobra.Command{
 		Use:   "builder",
@@ -38,14 +40,20 @@ func pkgBuilderCmd() *cobra.Command {
 			}
 
 			platformsToClean := strings.Split(platforms, ",")
+			bc := pkglib.BuilderConfig{
+				Context:    dockerContextFlag(cmd),
+				Name:       builderName.String(),
+				Image:      builderImage,
+				ConfigPath: builderConfigPath,
+			}
 			switch command {
 			case "du":
-				if err := pkglib.DiskUsage(buildersMap, builderImage, platformsToClean, verbose); err != nil {
-					return fmt.Errorf("Unable to print disk usage of builder: %w", err)
+				if err := pkglib.DiskUsage(buildersMap, bc, platformsToClean, verbose); err != nil {
+					return fmt.Errorf("unable to print disk usage of builder: %w", err)
 				}
 			case "prune":
-				if err := pkglib.PruneBuilder(buildersMap, builderImage, platformsToClean, verbose); err != nil {
-					return fmt.Errorf("Unable to prune builder: %w", err)
+				if err := pkglib.PruneBuilder(buildersMap, bc, platformsToClean, verbose); err != nil {
+					return fmt.Errorf("unable to prune builder: %w", err)
 				}
 			default:
 				return fmt.Errorf("unexpected command %s", command)
@@ -55,8 +63,10 @@ func pkgBuilderCmd() *cobra.Command {
 	}
 
 	cmd.PersistentFlags().StringVar(&builders, "builders", "", "Which builders to use for which platforms, e.g. linux/arm64=docker-context-arm64, overrides defaults and environment variables, see https://github.com/linuxkit/linuxkit/blob/master/docs/packages.md#Providing-native-builder-nodes")
+	cmd.PersistentFlags().Var(&builderName, "builder-name", fmt.Sprintf("Name of the buildkit builder container, default: %s, overrides env var %s", pkglib.DefaultBuilderName(), envVarBuilderName))
 	cmd.PersistentFlags().StringVar(&platforms, "platforms", fmt.Sprintf("linux/%s", runtime.GOARCH), "Which platforms we built images for")
 	cmd.PersistentFlags().StringVar(&builderImage, "builder-image", defaultBuilderImage, "buildkit builder container image to use")
+	cmd.Flags().StringVar(&builderConfigPath, "builder-config", "", "path to buildkit builder config.toml file to use, overrides the default config.toml in the builder image; USE WITH CAUTION")
 
 	return cmd
 }

@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/containerd/containerd/reference"
+	"github.com/containerd/containerd/v2/pkg/reference"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/match"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
+	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // matchPlatformsOSArch because match.Platforms rejects it if the provided
@@ -28,7 +29,25 @@ func matchPlatformsOSArch(platforms ...v1.Platform) match.Matcher {
 	}
 }
 
-func (p *Provider) findImage(imageName, architecture string) (v1.Image, error) {
+// matchAllAnnotations returns a matcher that matches all annotations
+func matchAllAnnotations(annotations map[string]string) match.Matcher {
+	return func(desc v1.Descriptor) bool {
+		if desc.Annotations == nil {
+			return false
+		}
+		if len(annotations) == 0 {
+			return true
+		}
+		for key, value := range annotations {
+			if aValue, ok := desc.Annotations[key]; !ok || aValue != value {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func (p *Provider) findImage(imageName string, platform imagespec.Platform) (v1.Image, error) {
 	root, err := p.FindRoot(imageName)
 	if err != nil {
 		return nil, err
@@ -40,7 +59,7 @@ func (p *Provider) findImage(imageName, architecture string) (v1.Image, error) {
 	ii, err := root.ImageIndex()
 	if err == nil {
 		// we have the index, get the manifest that represents the manifest for the desired architecture
-		platform := v1.Platform{OS: "linux", Architecture: architecture}
+		platform := v1.Platform{OS: platform.OS, Architecture: platform.Architecture}
 		images, err := partial.FindImages(ii, matchPlatformsOSArch(platform))
 		if err != nil || len(images) < 1 {
 			return nil, fmt.Errorf("error retrieving image %s for platform %v from cache: %v", imageName, platform, err)
@@ -50,9 +69,21 @@ func (p *Provider) findImage(imageName, architecture string) (v1.Image, error) {
 	return nil, fmt.Errorf("no image found for %s", imageName)
 }
 
+func (p *Provider) findIndex(imageName string) (v1.ImageIndex, error) {
+	root, err := p.FindRoot(imageName)
+	if err != nil {
+		return nil, err
+	}
+	ii, err := root.ImageIndex()
+	if err != nil {
+		return nil, fmt.Errorf("no image index found for %s", imageName)
+	}
+	return ii, nil
+}
+
 // FindDescriptor get the first descriptor pointed to by the image reference, whether tagged or digested
 func (p *Provider) FindDescriptor(ref *reference.Spec) (*v1.Descriptor, error) {
-	index, err := p.cache.ImageIndex()
+	index, err := p.Index()
 	// if there is no root index, we are broken
 	if err != nil {
 		return nil, fmt.Errorf("invalid image cache: %v", err)

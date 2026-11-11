@@ -1,5 +1,5 @@
-FROM linuxkit/containerd-dev:ee5755eb38c0a6b6aef2658b757652d82556c30c as containerd-dev
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS mirror
+FROM linuxkit/containerd-dev:405449f30ba384a0f67ad1b75f78a501604f2e44 as containerd-dev
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS mirror
 RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
 # btrfs-progfs is required for btrfs test (mkfs.btrfs)
 # util-linux is required for btrfs test (losetup)
@@ -9,6 +9,8 @@ RUN apk add --no-cache --initdb -p /out \
     busybox \
     btrfs-progs \
     btrfs-progs-dev \
+    device-mapper \
+    e2fsprogs \    
     gcc \
     git \
     go \
@@ -17,8 +19,10 @@ RUN apk add --no-cache --initdb -p /out \
     make \
     musl \
     util-linux \
+    util-linux-misc \
     xfsprogs \
     tzdata
+
 RUN rm -rf /out/etc/apk /out/lib/apk /out/var/cache
 RUN cp /out/usr/share/zoneinfo/UTC /out/etc/localtime
 
@@ -26,8 +30,9 @@ FROM scratch
 COPY --from=mirror /out/ /
 COPY --from=containerd-dev /go/src/github.com/containerd/containerd /go/src/github.com/containerd/containerd/
 
-# containerd 1.4.x does not support go modules; remove GO111MODULE=off when we switch to 1.5.x
-ENV GOPATH=/go GO111MODULE=off
+RUN mv /sbin/dmsetup /sbin/dmsetup.orig
+COPY dmsetup.sh /sbin/dmsetup
+ENV GOPATH=/go
 WORKDIR $GOPATH/src/github.com/containerd/containerd
 ADD run.sh ./run.sh
 

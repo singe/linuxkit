@@ -1,4 +1,5 @@
-FROM linuxkit/alpine:316c3f9d85c21fdd8bc7479e81d290f85bf60eb0 AS build
+# Dockerfile to build linuxkit/memlogd for linuxkit
+FROM linuxkit/alpine:7f3944798557de5518a56e3437d7ed982701f224 AS build
 
 RUN apk add --no-cache go musl-dev
 ARG GOPKGVERSION
@@ -21,5 +22,3 @@ COPY --from=build /go/bin/logread usr/bin/logread
 COPY --from=build /go/bin/logwrite usr/bin/logwrite
 # We'll start from init.d
 COPY etc/ /etc/
-COPY --from=build /etc/apk /etc/apk/
-COPY --from=build /lib/apk /lib/apk/

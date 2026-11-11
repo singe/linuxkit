@@ -5,312 +5,264 @@
 # Each kernel is pushed to hub twice:
 # - linuxkit/kernel:<kernel>.<major>.<minor>-<hash>
 # - linuxkit/kernel:<kernel>.<major>.<minor>
-# The <hash> is the git tree hash of the current directory. The build
-# will only rebuild the kernel image if the git tree hash changed.
+# The <hash> combines common files, the series directory, and build recipes.
+# Operational Makefile changes do not affect it.
 #
 # For some kernels we also build a separate package containing the perf utility
 # which is specific to a given kernel. perf packages are tagged the same way
 # kernel packages.
 
+RM = rm -f
 # Name and Org on Hub
 ORG?=linuxkit
-PLATFORMS?=linux/amd64,linux/arm64
 IMAGE?=kernel
-IMAGE_BCC:=kernel-bcc
-IMAGE_PERF:=kernel-perf
-IMAGE_ZFS:=zfs-kmod
-IMAGE_BUILDER=linuxkit/alpine:2be490394653b7967c250e86fd42cef88de428ba
+IMAGE_BUILDER=linuxkit/alpine:35b33c6b03c40e51046c3b053dd131a68a26c37a
 
 # You can specify an extra options for the Makefile. This will:
 # - append a config$(EXTRA) to the kernel config for your kernel/arch
 # - append $(EXTRA) to the CONFIG_LOCALVERSION of your kernel
 EXTRA?=
 
-# You can enable debug options for the Makefile. This will:
-# - append a config-dbg to the kernel config for your kernel/arch
-# - append -dbg to the CONFIG_LOCALVERSION of your kernel
 DEBUG?=
 
-ifeq ($(HASH),)
-HASH_COMMIT?=HEAD # Setting this is only really useful with the show-tag target
-HASH:=$(shell git ls-tree --full-tree $(HASH_COMMIT) -- $(CURDIR) | awk '{print $$3}')
-
-ifneq ($(HASH_COMMIT),HEAD) # Others can't be dirty by definition
+HASH_COMMIT?=HEAD
 DIRTY:=$(shell git update-index -q --refresh && git diff-index --quiet HEAD -- $(CURDIR) || echo "-dirty")
-endif
-endif
 
-# Path to push-manifest.sh
-PUSH_MANIFEST:=$(shell git rev-parse --show-toplevel)/scripts/push-manifest.sh
+# Shared files that affect all kernel builds (Dockerfiles, build yamls, scripts, etc.)
+# These are combined with series-specific folders to compute per-series hashes
+COMMON_DIR=common
 
-ARCH := $(shell uname -m)
-ifeq ($(ARCH),x86_64)
-SUFFIX=-amd64
+# Define artifact-affecting command/arguments once for hashing and execution.
+# Platform, force, and generated tags stay outside the hash: architectures share
+# a series tag, and operational flags must not invalidate it.
+BUILD_COMMAND=linuxkit pkg build .
+kernel_build_args=--build-yml ./$(COMMON_DIR)/build-kernel.yml --build-arg-file $(1)/build-args
+debug_build_args=$(call kernel_build_args,$(1)) --build-arg-file $(COMMON_DIR)/build-args-debug
+tool_build_args=--build-yml ./$(COMMON_DIR)/build-$(1).yml --build-arg-file $(2)/build-args
+
+# Hash committed common files, excluding the orchestration Makefile.
+SHARED_HASH:=$(shell git ls-tree -r --full-tree $(HASH_COMMIT) -- $(CURDIR)/$(COMMON_DIR) 2>/dev/null | git hash-object --stdin)
+
+# All variants retain one hash per series. Include their expanded recipes so a
+# build command/argument change invalidates the hash without hashing Makefile.
+# Usage: $(call series_hash,6.12.x)
+series_hash=$(shell (printf '%s\n' '$(SHARED_HASH)' '$(strip $(BUILD_COMMAND))' '$(strip $(call kernel_build_args,$(1)))' '$(strip $(call debug_build_args,$(1)))' $(foreach tool,$(TOOLS),'$(strip $(call tool_build_args,$(tool),$(1)))'); git ls-tree --full-tree $(HASH_COMMIT) -- $(CURDIR)/$(1) 2>/dev/null) | git hash-object --stdin)$(DIRTY)
+
+REPO_ROOT:=$(shell git rev-parse --show-toplevel)
+
+# determine our architecture
+ARCH?=$(shell uname -m)
+BUILDERARCH=$(ARCH)
+ifneq ($(ARCH),)
+ifeq ($(ARCH),$(filter $(ARCH),x86_64 amd64))
+override ARCH=x86_64
+override BUILDERARCH=amd64
 endif
 ifeq ($(ARCH),$(filter $(ARCH),aarch64 arm64))
-SUFFIX=-arm64
+override ARCH=aarch64
+override BUILDERARCH=arm64
+endif
+ifeq ($(ARCH),riscv64)
+override BUILDERARCH=riscv64
+endif
 endif
 
-TAG=$(HASH)$(DIRTY)
-
-BUILD_LABEL=--label org.mobyproject.linuxkit.kernel.buildimage=$(IMAGE_BUILDER)
-
-REPO?=https://github.com/linuxkit/linuxkit
-ifneq ($(REPO),)
-REPO_LABEL=--label org.opencontainers.image.source=$(REPO)
-endif
-ifeq ($(DIRTY),)
-REPO_COMMIT=$(shell git rev-parse HEAD)
-COMMIT_LABEL=--label org.opencontainers.image.revision=$(REPO_COMMIT)
-endif
-
-LABELS=$(REPO_LABEL) $(COMMIT_LABEL) $(BUILD_LABEL)
-
-KERNEL_VERSIONS=
-
-.PHONY: build push
-# Targets:
-# build: Builds all kernels
-# push:  Pushes and sign all tagged kernel images to hub
-build:
-push:
+BUILD_PLATFORM=linux/$(BUILDERARCH)
 
 .PHONY: notdirty
 notdirty:
 	@if [ x"$(DIRTY)" !=  x ]; then echo "Your repository is not clean. Will not push image"; exit 1; fi
 
+# utility function
+SPACE := $(eval) $(eval)
+PERIOD := .
+# series - convert a version to a series, e.g. 6.6.13 -> 6.6.x
+series = $(word 1,$(subst ., ,$(1))).$(word 2,$(subst ., ,$(1))).x
+# serieswithhash - convert a version with or without a hash to a series with a hash, e.g. 6.6.13-anbcd -> 6.6.x-[0-9a-f]+
+serieswithhash = $(word 1,$(subst ., ,$(1))).$(word 2,$(subst ., ,$(1))).[0-9]+-[0-9a-f]+
 
-# A template for defining kernel build
-# Arguments:
-# $1: Full kernel version, e.g., 4.9.22
-# $2: Kernel "series", e.g., 4.9.x
-# $3: Build a specific kernel like -rt: Preempt-RT (used as suffix for image)
-# This defines targets like:
-# build_4.9.x and  push_4.9.x and adds them as dependencies
-# to the global targets
-# Set $3 to "-rt", to build Preempt-RT kernels. This defines targets like
-# build_4.14.x-rt and adds "-rt" to the hub image name.
-# Set $4 to "-dbg", to build debug kernels. This defines targets like
-# build_4.9.x-dbg and adds "-dbg" to the hub image name.
-# Set $3 to "-rt" and $4 to "-dbg" to build debug Preempt-RT kernel.
-define kernel
-
-ifeq ($(4),)
-KERNEL_VERSIONS+=$(1)
-endif
-
-buildx_$(2)$(3)$(4): Dockerfile Makefile $(wildcard patches-$(2)/*) $(wildcard config-$(2)*) config-dbg
-	docker pull $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG) || \
-		docker buildx build \
-			--platform=$(PLATFORMS) --push \
-			--build-arg KERNEL_VERSION=$(1) \
-			--build-arg KERNEL_SERIES=$(2) \
-			--build-arg EXTRA=$(3) \
-			--build-arg DEBUG=$(4) \
-			--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-			$(LABELS) \
-			--no-cache -t $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG) .
-
-build_$(2)$(3)$(4): Dockerfile Makefile $(wildcard patches-$(2)/*) $(wildcard config-$(2)*) config-dbg
-	docker pull $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		docker build \
-			--build-arg KERNEL_VERSION=$(1) \
-			--build-arg KERNEL_SERIES=$(2) \
-			--build-arg EXTRA=$(3) \
-			--build-arg DEBUG=$(4) \
-			--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-			$(LABELS) \
-			--no-cache -t $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+# word 1 is the release, word 2 is the tool
+RELEASESEP := PART
+toolname = $(word 2, $(subst $(RELEASESEP), ,$(1)))
+toolkernel = $(word 1, $(subst $(RELEASESEP), ,$(1)))
+baseimageextension = :$(1)$(EXTRA)$(DEBUG)
+baseimage = $(ORG)/$(IMAGE)$(call baseimageextension,$(1))
+uniq = $(if $1,$(firstword $1) $(call uniq,$(filter-out $(firstword $1),$1)))
 
 
-forcebuild_$(2)$(3)$(4): Dockerfile Makefile $(wildcard patches-$(2)/*) $(wildcard config-$(2)*) config-dbg
-	docker build \
-		--build-arg KERNEL_VERSION=$(1) \
-		--build-arg KERNEL_SERIES=$(2) \
-		--build-arg EXTRA=$(3) \
-		--build-arg DEBUG=$(4) \
-		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		$(LABELS) \
-		--no-cache -t $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+# DEPRECATED : all kernel versions (actually series) marked as deprecated
+# You might still be able to build them, but they are not built by default or supported
+DEPRECATED_list=$(wildcard */deprecated)
+DEPRECATED := $(patsubst %/deprecated,%,$(DEPRECATED_list))
+#
+# KERNELS : all potential kernel versions, based on the build-args files
 
-push_$(2)$(3)$(4): notdirty build_$(2)$(3)$(4)
-	docker pull $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		(docker push $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-		 docker tag $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE):$(1)$(3)$(4)$(SUFFIX) && \
-		 docker push $(ORG)/$(IMAGE):$(1)$(3)$(4)$(SUFFIX) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE):$(1)$(3)$(4))
+# first find all known build-args files
+KERNELS_buildargfiles=$(wildcard */build-args)
+# get their directories
+KERNELS_alldirs=$(patsubst %/build-args,%,$(KERNELS_buildargfiles))
+# remove any directories that are marked as deprecated; what is left is valid dirs
+KERNELS_validdirs=$(filter-out $(DEPRECATED),$(KERNELS_alldirs))
+# get the values from the valid dirs
+KERNELS=$(shell awk -F= '/^KERNEL_VERSION=/ {print $$2}' $(addsuffix /build-args,$(KERNELS_validdirs)))
 
-forcepush_$(2)$(3)$(4): notdirty forcebuild_$(2)$(3)$(4)
-	docker push $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-	 docker tag $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE):$(1)$(3)$(4)$(SUFFIX) && \
-	 docker push $(ORG)/$(IMAGE):$(1)$(3)$(4)$(SUFFIX) && \
-	 $(PUSH_MANIFEST) $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG) && \
-	 $(PUSH_MANIFEST) $(ORG)/$(IMAGE):$(1)$(3)$(4)
-
-# tag the builder and create the manifest
-tagbuilder_$(2)$(3)$(4): notdirty
-	docker tag $(IMAGE_BUILDER) $(ORG)/$(IMAGE):$(1)$(3)$(4)-builder$(SUFFIX) && \
-	docker push $(ORG)/$(IMAGE):$(1)$(3)$(4)-builder$(SUFFIX) && \
-	$(PUSH_MANIFEST) $(ORG)/$(IMAGE):$(1)$(3)$(4)-builder
+# get the highest supported one
+KERNEL_HIGHEST=$(shell echo $(KERNELS) | tr ' ' '\n' | sort -V | tail -n 1)
 
 
-show-tag_$(2)$(3)$(4):
-	@echo $(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)
+# we build all tools across all platforms and kernels that we build
+TOOLS=bcc perf
 
-build: build_$(2)$(3)$(4)
-forcebuild: forcebuild_$(2)$(3)$(4)
-push: push_image tagbuilder
-push_image: push_$(2)$(3)$(4)
-forcepush: forcepush_image tagbuilder
-forcepush_image: forcepush_$(2)$(3)$(4)
-tagbuilder: tagbuilder_$(2)$(3)$(4)
-show-tags: show-tag_$(2)$(3)$(4)
+# kernel versions used for kconfig
+KERNEL_VERSIONS=$(call uniq,$(foreach l,$(KERNELS),$(word 1,$(subst -, ,$(l)))))
 
-# Only build perf only on x86 and recent LTS and latest stable kernels
-ifeq ($(ARCH),x86_64)
-ifeq ($(2), $(filter $(2),5.15.x 5.10.x 5.4.x))
-build_perf_$(2)$(3)$(4): build_$(2)$(3)$(4)
-	docker pull $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		 docker build -f Dockerfile.perf \
-			--build-arg IMAGE=$(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) \
-			--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-			--no-cache --network=none $(LABEL) -t $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+.PHONY: build push setforce show-tags list
 
-forcebuild_perf_$(2)$(3)$(4): build_$(2)$(3)$(4)
-	docker build -f Dockerfile.perf \
-		--build-arg IMAGE=$(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) \
-		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		--no-cache --network=none $(LABEL) -t $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+list:
+	@echo "Arch: $(ARCH)"
+	@echo "Kernels: $(KERNELS)"
+	@echo "Deprecated: $(DEPRECATED)"
+	@echo "Tools: $(TOOLS)"
+	@echo "Shared hash: $(SHARED_HASH)"
 
-push_perf_$(2)$(3)$(4): notdirty build_perf_$(2)$(3)$(4)
-	docker pull $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		(docker push $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-		 docker tag $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)$(SUFFIX) && \
-		 docker push $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)$(SUFFIX) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4))
+setforce:
+	$(eval FORCE=--force)
+build: $(addprefix build-,$(KERNELS))
+push: $(addprefix push-,$(KERNELS))
+show-tags: $(addprefix show-tag-,$(KERNELS))
 
-forcepush_perf_$(2)$(3)$(4): notdirty forcebuild_perf_$(2)$(3)$(4)
-	docker push $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-	docker tag $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)$(SUFFIX) && \
-	docker push $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)$(SUFFIX) && \
-	$(PUSH_MANIFEST) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)-$(TAG) && \
-	$(PUSH_MANIFEST) $(ORG)/$(IMAGE_PERF):$(1)$(3)$(4)
+build-%: buildkernel-% buildtools-%;
 
-build: build_perf_$(2)$(3)$(4)
-forcebuild: forcebuild_perf_$(2)$(3)$(4)
-push: push_perf_$(2)$(3)$(4)
-forcepush: forcepush_perf_$(2)$(3)$(4)
-endif
-endif
+buildkernel-%: buildkerneldeps-% buildplainkernel-% builddebugkernel-%;
 
-# Only build bcc only on x86 and recent LTS and latest stable kernels
-ifeq ($(ARCH),x86_64)
-ifeq ($(2), $(filter $(2),5.15.x 5.10.x 5.4.x))
-build_bcc_$(2)$(3)$(4): build_$(2)$(3)$(4)
-	docker pull $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		docker build -f Dockerfile.bcc \
-			--build-arg IMAGE=$(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) \
-			--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-			--no-cache $(LABEL) -t $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+buildkerneldeps-%: $(COMMON_DIR)/Dockerfile Makefile $(wildcard patches-$(call series,$*)/*) $(wildcard config-$(call series,$*)*) ;
 
-forcebuild_bcc_$(2)$(3)$(4): build_$(2)$(3)$(4)
-	 docker build -f Dockerfile.bcc \
-		--build-arg IMAGE=$(ORG)/$(IMAGE):$(1)$(3)$(4)-$(TAG)$(SUFFIX) \
-		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		--no-cache $(LABEL) -t $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) .
+buildplainkernel-%: buildkerneldeps-%
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(BUILD_COMMAND) $(FORCE) --platforms $(BUILD_PLATFORM) $(call kernel_build_args,$(KERNEL_SERIES)) --hash $(SERIES_HASH) --tag "$*-{{.Hash}}"
 
-push_bcc_$(2)$(3)$(4): notdirty build_bcc_$(2)$(3)$(4)
-	docker pull $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) || \
-		(docker push $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-		 docker tag $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)$(SUFFIX) && \
-		 docker push $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)$(SUFFIX) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4))
+builddebugkernel-%: buildkerneldeps-%
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(BUILD_COMMAND) $(FORCE) --platforms $(BUILD_PLATFORM) $(call debug_build_args,$(KERNEL_SERIES)) --hash $(SERIES_HASH) --tag "$*-dbg-{{.Hash}}"
 
-forcepush_bcc_$(2)$(3)$(4): notdirty forcebuild_bcc_$(2)$(3)$(4)
-	docker push $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) && \
-	docker tag $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)$(SUFFIX) && \
-	docker push $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)$(SUFFIX) && \
-	$(PUSH_MANIFEST) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)-$(TAG) && \
-	$(PUSH_MANIFEST) $(ORG)/$(IMAGE_BCC):$(1)$(3)$(4)
+push-%: notdirty build-% pushkernel-% tagbuilder-% pushtools-%;
 
-build: build_bcc_$(2)$(3)$(4)
-forcebuild: forcebuild_bcc_$(2)$(3)$(4)
-push: push_bcc_$(2)$(3)$(4)
-forcepush: forcepush_bcc_$(2)$(3)$(4)
-endif
-endif
+# tagbuilder-% tags the builder image with the kernel version and `-builder` and pushes it
+# checks if it already matches on the registry before pushing
+# because the build may have been on a remote builder, or we may not have had to do a local build,
+# we cannot assume that IMAGE_BUILDER is available locally, whether in docker image cache or limuxkit cache
+tagbuilder-%: notdirty
+	$(eval BUILDER_IMAGE=$(call baseimage,$*)-builder)
+	linuxkit pkg remote-tag $(IMAGE_BUILDER) $(BUILDER_IMAGE)
 
-ifeq ($(4),)
-# ZFS does not compile against -dbg kernels because CONFIG_DEBUG_LOCK_ALLOC
-# is incompatible with CDDL, apparently (this is ./configure check)
-build_zfs_$(2)$(3): build_$(2)$(3)
-	docker pull $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG)$(SUFFIX) || \
-		docker build -f Dockerfile.zfs \
-			--build-arg IMAGE=$(ORG)/$(IMAGE):$(1)$(3)-$(TAG)$(SUFFIX) \
-			--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-			--no-cache $(LABEL) -t $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG)$(SUFFIX) .
+pushkernel-%: pushplainkernel-% pushdebugkernel-%;
 
-push_zfs_$(2)$(3): notdirty build_zfs_$(2)$(3)
-	docker pull $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG)$(SUFFIX) || \
-		(docker push $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG)$(SUFFIX) && \
-		 docker tag $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG)$(SUFFIX) $(ORG)/$(IMAGE_ZFS):$(1)$(3)$(SUFFIX) && \
-		 docker push $(ORG)/$(IMAGE_ZFS):$(1)$(3)$(SUFFIX) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_ZFS):$(1)$(3)-$(TAG) && \
-		 $(PUSH_MANIFEST) $(ORG)/$(IMAGE_ZFS):$(1)$(3))
-endif
+pushplainkernel-%: buildplainkernel-%
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(eval HASHED_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --hash $(SERIES_HASH) --tag "$*-{{.Hash}}"))
+	$(eval PLAIN_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --tag "$*"))
+	linuxkit cache push $(HASHED_IMAGE)
+	linuxkit cache push $(HASHED_IMAGE) --remote-name $(PLAIN_IMAGE)
 
-endef
+pushdebugkernel-%: builddebugkernel-%
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(eval HASHED_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --hash $(SERIES_HASH) --tag "$*-dbg-{{.Hash}}"))
+	$(eval PLAIN_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --tag "$*-dbg"))
+	linuxkit cache push $(HASHED_IMAGE)
+	linuxkit cache push $(HASHED_IMAGE) --remote-name $(PLAIN_IMAGE)
+
+show-tag-%:
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	@echo	$(call baseimage,$*)-$(SERIES_HASH)
+
+buildtools-%: $(addprefix buildtool-%$(RELEASESEP),$(TOOLS));
+
+buildtool-%:
+	$(eval TOOL=$(call toolname,$*))
+	$(eval KERNEL_VERSION=$(call toolkernel,$*))
+	$(eval KERNEL_SERIES=$(call series,$(KERNEL_VERSION)))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(BUILD_COMMAND) $(FORCE) --platforms $(BUILD_PLATFORM) $(call tool_build_args,$(TOOL),$(KERNEL_SERIES)) --hash $(SERIES_HASH) --tag "$(KERNEL_VERSION)-{{.Hash}}"
+
+pushtools-%: $(addprefix pushtool-%$(RELEASESEP),$(TOOLS));
+
+pushtool-%: buildtool-%
+	$(eval TOOL=$(call toolname,$*))
+	$(eval KERNEL_VERSION=$(call toolkernel,$*))
+	$(eval KERNEL_SERIES=$(call series,$(KERNEL_VERSION)))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	$(eval HASHED_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-$(TOOL).yml --hash $(SERIES_HASH) --tag "$(KERNEL_VERSION)-{{.Hash}}"))
+	$(eval PLAIN_IMAGE=$(shell linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-$(TOOL).yml --tag "$(KERNEL_VERSION)"))
+	linuxkit cache push $(HASHED_IMAGE)
+	linuxkit cache push $(HASHED_IMAGE) --remote-name $(PLAIN_IMAGE)
 
 #
-# Build Targets
-# Debug targets only for latest stable and LTS stable
+# targets for getting names of particular tags and replacing them, like what scripts/update-component-sha.sh does
 #
-ifeq ($(ARCH),x86_64)
-$(eval $(call kernel,5.15.27,5.15.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.15.27,5.15.x,,-dbg))
-$(eval $(call kernel,5.10.104,5.10.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.4.172,5.4.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.11.4,5.11.x,-rt,))
 
-else ifeq ($(ARCH),$(filter $(ARCH),aarch64 arm64))
-$(eval $(call kernel,5.15.27,5.15.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.10.104,5.10.x,$(EXTRA),$(DEBUG)))
-$(eval $(call kernel,5.11.4,5.11.x,-rt,))
+# get the tag for the normal kernel for a particular version. Accepts version or series
+tag-plainkernel-%:
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	@linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --hash $(SERIES_HASH) --tag "$*-{{.Hash}}"
 
-endif
+# get the tag for the debug kernel for a particular version. Accepts version or series
+tag-debugkernel-%:
+	$(eval KERNEL_SERIES=$(call series,$*))
+	$(eval SERIES_HASH=$(call series_hash,$(KERNEL_SERIES)))
+	@linuxkit pkg show-tag . --build-yml ./$(COMMON_DIR)/build-kernel.yml --hash $(SERIES_HASH) --tag "$*-dbg-{{.Hash}}"
+
+# find and replace any usage of the normal kernel with hash for a particular series
+# will update hash for same semver and/or patch version
+update-kernel-hash-yaml-%:
+	$(eval NEWTAG=$(shell $(MAKE) tag-plainkernel-$*))
+	$(eval OLDTAG=$(call serieswithhash,$(NEWTAG)))
+	@cd $(REPO_ROOT) && ./scripts/update-component-sha.sh --hash "$(OLDTAG)" "$(NEWTAG)"
+
+# find and replace any usage of the normal kernel with semver for most recent series
+update-kernel-semver-yaml-%:
+	$(eval NEWTAG=linuxkit/kernel:$*)
+	$(eval OLDTAG=linuxkit/kernel:[0-9]+.[0-9]+.[0-9]+)
+	@cd $(REPO_ROOT) && ./scripts/update-component-sha.sh --hash "$(OLDTAG)" "$(NEWTAG)"
+
+# update-kernel-yamls updates the latest hash for each supported series,
+# as well as the most recent supported semver
+update-kernel-yamls: $(addprefix update-kernel-hash-yaml-,$(KERNELS)) update-kernel-semver-yaml-$(KERNEL_HIGHEST);
 
 # Target for kernel config
-kconfig:
-ifeq (${KCONFIG_TAG},)
-	docker build --no-cache -f Dockerfile.kconfig \
-		--build-arg KERNEL_VERSIONS="$(KERNEL_VERSIONS)" \
-		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		-t linuxkit/kconfig  .
-else
-	docker build --no-cache -f Dockerfile.kconfig \
-		--build-arg KERNEL_VERSIONS="$(KERNEL_VERSIONS)" \
-		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		-t linuxkit/kconfig:${KCONFIG_TAG}  .
+KCONFIG_TAG_EXTENSION=
+ifneq (${KCONFIG_TAG},)
+KCONFIG_TAG_EXTENSION=-${KCONFIG_TAG}
 endif
+
+kconfig:
+	docker build --no-cache -f $(COMMON_DIR)/Dockerfile.kconfig \
+		--build-arg KERNEL_VERSIONS="$(KERNEL_VERSIONS)" \
+		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
+		--platform $(BUILD_PLATFORM) \
+		-t linuxkit/kconfig:$(ARCH)${KCONFIG_TAG_EXTENSION} .
 
 kconfigx:
 ifeq (${KCONFIG_TAG},)
-	docker buildx build --no-cache -f Dockerfile.kconfigx \
-		--platform=$(PLATFORMS) \
+	docker buildx build --no-cache -f $(COMMON_DIR)/Dockerfile.kconfigx \
+		--platform $(BUILD_PLATFORM) \
 		--output . \
 		--build-arg KERNEL_VERSIONS="$(KERNEL_VERSIONS)" \
 		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		-t linuxkit/kconfigx  .
+		-t linuxkit/kconfigx:$(ARCH)  .
 	cp linux_arm64/config-${KERNEL_VERSIONS}-arm64 config-${KERNEL_SERIES}-aarch64
 	cp linux_amd64/config-${KERNEL_VERSIONS}-amd64 config-${KERNEL_SERIES}-x86_64
+	cp linux_amd64/config-${KERNEL_VERSIONS}-riscv64 config-${KERNEL_SERIES}-riscv64
 else
-	docker buildx build --no-cache -f Dockerfile.kconfigx \
-		--platform=$(PLATFORMS) --push \
+	docker buildx build --no-cache -f $(COMMON_DIR)/Dockerfile.kconfigx \
+		--platform $(BUILD_PLATFORM) --push \
 		--output . \
 		--build-arg KERNEL_VERSIONS="$(KERNEL_VERSIONS)" \
 		--build-arg BUILD_IMAGE=$(IMAGE_BUILDER) \
-		-t linuxkit/kconfigx:${KCONFIG_TAG}  .
+		-t linuxkit/kconfigx:$(ARCH)${KCONFIG_TAG_EXTENSION}  .
 endif

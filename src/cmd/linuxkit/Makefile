@@ -1,6 +1,25 @@
-VERSION?="v0.0-dev"
+# determine the version we save in the build binary
+# we always include the git commit.
+# the version is the current semver if it this commit matches the tag,
+# else it is the following: <tag>-<commits since tag>-<short commit hash>
+# if the git tree is dirty, append "-dirty"
+# most recent commit
 GIT_COMMIT=$(shell git rev-list -1 HEAD)
-GO_COMPILE?=linuxkit/go-compile:c97703655e8510b7257ffc57f25e40337b0f0813
+# whether or not it is dirty, i.e. has uncommitted changes
+GIT_DIRTY=$(shell git update-index -q --refresh && git diff-index --quiet HEAD -- . || echo "-dirty")
+# most recent tag, might or might not point to GIT_COMMIT
+GIT_TAG=$(shell git describe --tags --match="v*")
+# include the possible "-dirty" suffix
+VERSION=$(GIT_TAG)$(GIT_DIRTY)
+
+report:
+	@echo "VERSION: $(VERSION)"
+	@echo "GIT_COMMIT: $(GIT_COMMIT)"
+	@echo "GIT_DIRTY: $(GIT_DIRTY)"
+	@echo "GIT_TAG: $(GIT_TAG)"
+	@echo "VERSION: $(VERSION)"
+
+GO_COMPILE?=linuxkit/go-compile:985a9db72a7e6941de5e1eb71c2b41b76bf0556f
 export GO_FLAGS=-mod=vendor
 
 ifeq ($(OS),Windows_NT)
@@ -24,7 +43,7 @@ endif
 default: $(LINUXKIT)
 all: default
 
-LINUXKIT_DEPS=$(wildcard *.go) $(wildcard */*.go) Makefile
+LINUXKIT_DEPS=$(wildcard *.go) $(wildcard */*.go) $(wildcard *.m) $(wildcard *.h) $(wildcard *.plist) $(wildcard *.entitlements) Makefile
 
 
 ifeq ($(GOOS),darwin)
@@ -64,6 +83,9 @@ endif
 # without CGO attempt to use virtualization framework will ends with error
 ifeq ($(GOOS), darwin)
 	CGO_ENABLED=1
+	MACOSX_DEPLOYMENT_TARGET?=12.0
+	export MACOSX_DEPLOYMENT_TARGET
+	LOCAL_LDFLAGS += -linkmode=external -extldflags \"-sectcreate __TEXT __info_plist linuxkit.Info.plist\"
 endif
 
 ifeq ($(PIE), 1)
@@ -82,7 +104,7 @@ local-check: $(LINUXKIT_DEPS)
 	@echo ineffassign... && ineffassign ./...
 
 local-build:
-	@mkdir -p $(dir LOCAL_TARGET)
+	@mkdir -p $(dir $(LOCAL_TARGET))
 	CGO_ENABLED=$(CGO_ENABLED) go build -o $(LOCAL_TARGET) $(BUILD_FLAGS) --ldflags "$(LOCAL_LDFLAGS)"
 
 local-test: $(LINUXKIT_DEPS)
@@ -98,7 +120,7 @@ sign:
 
 install:
 	cp -R ./bin/* $(PREFIX)/bin
-	
+
 .PHONY: clean
 clean:
 	rm -rf bin *.log *-kernel *-cmdline *-state *.img *.iso *.gz *.qcow2 *.vhd *.vmx *.vmdk *.tar *.raw

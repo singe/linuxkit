@@ -1,24 +1,24 @@
 kernel:
-  image: linuxkit/kernel:4.9.34
+  image: linuxkit/kernel:6.18.60
   cmdline: "console=ttyS0 page_poison=1"
 init:
-  - linuxkit/init:144c9cee8aed9e30a16940f2bf1d3813883aceda
-  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
-  - linuxkit/containerd:d445de33c7f08470187b068d247b1c0dea240f0a
-  - linuxkit/ca-certificates:4de36e93dc87f7ccebd20db616ed10d381911d32
+  - linuxkit/init:075ff447b68e23feef95589c90010a039533e5b5
+  - linuxkit/runc:9442aa234715e751a16144f1d4ae3fd1a00fd492
+  - linuxkit/containerd:eb5daf20704109ea58abb38d2b808e0c3a7e3717
+  - linuxkit/ca-certificates:695574301bd08dda987dccb31e384f7fab3c5c05
   - samoht/fdd
 onboot:
   - name: sysctl
-    image: linuxkit/sysctl:a88a50c104d538b58da5e1441f6f0b4b738f76a6
+    image: linuxkit/sysctl:43ac1d39da329c3567fcb9689e5ca99de6d169b6
 services:
   - name: getty
-    image: linuxkit/getty:06f34bce0facea79161566d67345c3ea49965437
+    image: linuxkit/getty:a86d74c8f89be8956330c3b115b0b1f2e09ef6e0
     env:
      - INSECURE=true
   - name: rngd
-    image: linuxkit/rngd:310c16ec5315bd07d4b8f5332cfa7dc5cbc7d368
+    image: linuxkit/rngd:984eb580ecb63986f07f626b61692a97aacd7198
   - name: dhcpcd
-    image: linuxkit/dhcpcd:2a8ed08fea442909ba10f950d458191ed3647115
+    image: linuxkit/dhcpcd:b87e9ececac55a65eaa592f4dd8b4e0c3009afdb
 files:
   - path: etc/init.d/020-fdd-init
     mode: "0700"

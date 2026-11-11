@@ -3,17 +3,20 @@ package imageutil
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/leases"
-	"github.com/containerd/containerd/platforms"
-	"github.com/containerd/containerd/reference"
-	"github.com/containerd/containerd/remotes"
-	"github.com/containerd/containerd/remotes/docker"
-	"github.com/moby/buildkit/util/attestation"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/leases"
+	"github.com/containerd/containerd/v2/core/remotes"
+	"github.com/containerd/containerd/v2/core/remotes/docker"
+	"github.com/containerd/containerd/v2/pkg/reference"
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/containerd/platforms"
+	intoto "github.com/in-toto/in-toto-golang/in_toto"
+	srctypes "github.com/moby/buildkit/source/types"
 	"github.com/moby/buildkit/util/contentutil"
 	"github.com/moby/buildkit/util/leaseutil"
 	"github.com/moby/buildkit/util/resolver/limited"
@@ -47,8 +50,17 @@ func AddLease(f func(context.Context) error) {
 	leasesMu.Unlock()
 }
 
+// ResolveToNonImageError is returned by the resolver when the ref is mutated by policy to a non-image ref
+type ResolveToNonImageError struct {
+	Ref     string
+	Updated string
+}
+
+func (e ResolveToNonImageError) Error() string {
+	return fmt.Sprintf("ref mutated by policy to non-image: %s://%s -> %s", srctypes.DockerImageScheme, e.Ref, e.Updated)
+}
+
 func Config(ctx context.Context, str string, resolver remotes.Resolver, cache ContentCache, leaseManager leases.Manager, p *ocispecs.Platform) (digest.Digest, []byte, error) {
-	// TODO: fix buildkit to take interface instead of struct
 	var platform platforms.MatchComparer
 	if p != nil {
 		platform = platforms.Only(*p)
@@ -104,10 +116,13 @@ func Config(ctx context.Context, str string, resolver remotes.Resolver, cache Co
 	}
 
 	if desc.MediaType == images.MediaTypeDockerSchema1Manifest {
-		return readSchema1Config(ctx, ref.String(), desc, fetcher, cache)
+		errMsg := "support Docker Image manifest version 2, schema 1 has been removed. " +
+			"More information at https://docs.docker.com/go/deprecated-image-specs/"
+		return "", nil, errors.WithStack(cerrdefs.ErrConflict.WithMessage(errMsg))
 	}
 
 	children := childrenConfigHandler(cache, platform)
+	children = images.LimitManifests(children, platform, 1)
 
 	dslHandler, err := docker.AppendDistributionSourceLabel(cache, ref.String())
 	if err != nil {
@@ -174,7 +189,7 @@ func childrenConfigHandler(provider content.Provider, platform platforms.MatchCo
 				descs = append(descs, index.Manifests...)
 			}
 		case images.MediaTypeDockerSchema2Config, ocispecs.MediaTypeImageConfig, docker.LegacyConfigMediaType,
-			attestation.MediaTypeDockerSchema2AttestationType:
+			intoto.PayloadType:
 			// childless data types.
 			return nil, nil
 		default:
@@ -185,10 +200,7 @@ func childrenConfigHandler(provider content.Provider, platform platforms.MatchCo
 	}
 }
 
-// specs.MediaTypeImageManifest, // TODO: detect schema1/manifest-list
 func DetectManifestMediaType(ra content.ReaderAt) (string, error) {
-	// TODO: schema1
-
 	dt := make([]byte, ra.Size())
 	if _, err := ra.ReadAt(dt, 0); err != nil {
 		return "", err

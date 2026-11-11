@@ -47,7 +47,7 @@ brew install --HEAD linuxkit
 
 Build requirements from source using a container
 - GNU `make`
-- Docker
+- Docker (see [Docker contexts and alternative backends](docs/docker-contexts.md))
 - optionally `qemu`
 
 For a local build using `make local`
@@ -63,8 +63,8 @@ Once you have built the tool, use
 ```
 linuxkit build linuxkit.yml
 ```
-to build the example configuration. You can also specify different output formats, eg `linuxkit build -format raw-bios linuxkit.yml` to
-output a raw BIOS bootable disk image, or `linuxkit build -format iso-efi linuxkit.yml` to output an EFI bootable ISO image. See `linuxkit build -help` for more information.
+to build the example configuration. You can also specify different output formats, eg `linuxkit build --format raw-bios linuxkit.yml` to
+output a raw BIOS bootable disk image, or `linuxkit build --format iso-efi linuxkit.yml` to output an EFI bootable ISO image. See `linuxkit build -help` for more information.
 
 ### Booting and Testing
 
@@ -87,7 +87,7 @@ Currently supported platforms are:
   - [OpenStack](docs/platform-openstack.md) `[x86_64]`
   - [Scaleway](docs/platform-scaleway.md) `[x86_64]`
 - Baremetal:
-  - [packet.net](docs/platform-packet.md) `[x86_64, arm64]`
+  - [deploy.equinix.com](docs/platform-equinixmetal.md) `[x86_64, arm64]`
   - [Raspberry Pi Model 3b](docs/platform-rpi3.md)  `[arm64]`
 
 

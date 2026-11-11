@@ -1,18 +1,7 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
-package otelhttptrace
+package otelhttptrace // import "go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
 
 import (
 	"context"
@@ -25,9 +14,13 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace/internal/semconv"
 )
+
+// ScopeName is the instrumentation scope name.
+const ScopeName = "go.opentelemetry.io/otel/instrumentation/httptrace"
 
 // HTTP attributes.
 var (
@@ -44,13 +37,11 @@ var (
 	HTTPDNSAddrs               = attribute.Key("http.dns.addrs")
 )
 
-var (
-	hookMap = map[string]string{
-		"http.dns":     "http.getconn",
-		"http.connect": "http.getconn",
-		"http.tls":     "http.getconn",
-	}
-)
+var hookMap = map[string]string{
+	"http.dns":     "http.getconn",
+	"http.connect": "http.getconn",
+	"http.tls":     "http.getconn",
+}
 
 func parentHook(hook string) string {
 	if strings.HasPrefix(hook, "http.connect") {
@@ -72,8 +63,20 @@ func (fn clientTraceOptionFunc) apply(c *clientTracer) {
 }
 
 // WithoutSubSpans will modify the httptrace.ClientTrace to only collect data
-// as Events and Attributes on a span found in the context.  By default
+// as Events and Attributes on a span found in the context. By default
 // sub-spans will be generated.
+//
+// This option is recommended for services that make a large number of
+// outbound HTTP requests per incoming request (e.g., API gateways,
+// fan-out proxies, or GraphQL servers). Each outbound request creates
+// up to 7 sub-spans (http.getconn, http.dns, http.connect, http.tls,
+// http.headers, http.send, http.receive) as separate heap-allocated
+// trace.Span objects. In high fan-out services this multiplied span
+// volume can overwhelm the span processor queue and increase GC
+// pressure, resulting in elevated and continuously growing memory usage.
+// Using WithoutSubSpans replaces those spans with lightweight events on
+// the parent span, preserving the diagnostic information at a fraction
+// of the cost.
 func WithoutSubSpans() ClientTraceOption {
 	return clientTraceOptionFunc(func(ct *clientTracer) {
 		ct.useSpans = false
@@ -83,7 +86,7 @@ func WithoutSubSpans() ClientTraceOption {
 // WithRedactedHeaders will be replaced by fixed '****' values for the header
 // names provided.  These are in addition to the sensitive headers already
 // redacted by default: Authorization, WWW-Authenticate, Proxy-Authenticate
-// Proxy-Authorization, Cookie, Set-Cookie
+// Proxy-Authorization, Cookie, Set-Cookie.
 func WithRedactedHeaders(headers ...string) ClientTraceOption {
 	return clientTraceOptionFunc(func(ct *clientTracer) {
 		for _, header := range headers {
@@ -135,6 +138,7 @@ type clientTracer struct {
 	redactedHeaders map[string]struct{}
 	addHeaders      bool
 	useSpans        bool
+	semconv         semconv.HTTPClient
 }
 
 // NewClientTrace returns an httptrace.ClientTrace implementation that will
@@ -158,6 +162,7 @@ func NewClientTrace(ctx context.Context, opts ...ClientTraceOption) *httptrace.C
 		},
 		addHeaders: true,
 		useSpans:   true,
+		semconv:    semconv.NewHTTPClient(nil),
 	}
 
 	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
@@ -171,8 +176,8 @@ func NewClientTrace(ctx context.Context, opts ...ClientTraceOption) *httptrace.C
 	}
 
 	ct.tr = ct.tracerProvider.Tracer(
-		"go.opentelemetry.io/otel/instrumentation/httptrace",
-		trace.WithInstrumentationVersion(SemVersion()),
+		ScopeName,
+		trace.WithInstrumentationVersion(Version),
 	)
 
 	return &httptrace.ClientTrace{
@@ -196,10 +201,11 @@ func NewClientTrace(ctx context.Context, opts ...ClientTraceOption) *httptrace.C
 }
 
 func (ct *clientTracer) start(hook, spanName string, attrs ...attribute.KeyValue) {
+	if ct.root == nil {
+		ct.root = trace.SpanFromContext(ct.Context)
+	}
+
 	if !ct.useSpans {
-		if ct.root == nil {
-			ct.root = trace.SpanFromContext(ct.Context)
-		}
 		ct.root.AddEvent(hook+".start", trace.WithAttributes(attrs...))
 		return
 	}
@@ -208,11 +214,7 @@ func (ct *clientTracer) start(hook, spanName string, attrs ...attribute.KeyValue
 	defer ct.mtx.Unlock()
 
 	if hookCtx, found := ct.activeHooks[hook]; !found {
-		var sp trace.Span
-		ct.activeHooks[hook], sp = ct.tr.Start(ct.getParentContext(hook), spanName, trace.WithAttributes(attrs...), trace.WithSpanKind(trace.SpanKindClient))
-		if ct.root == nil {
-			ct.root = sp
-		}
+		ct.activeHooks[hook], _ = ct.tr.Start(ct.getParentContext(hook), spanName, trace.WithAttributes(attrs...), trace.WithSpanKind(trace.SpanKindClient))
 	} else {
 		// end was called before start finished, add the start attributes and end the span here
 		span := trace.SpanFromContext(hookCtx)
@@ -225,6 +227,10 @@ func (ct *clientTracer) start(hook, spanName string, attrs ...attribute.KeyValue
 
 func (ct *clientTracer) end(hook string, err error, attrs ...attribute.KeyValue) {
 	if !ct.useSpans {
+		// sometimes end may be called without previous start
+		if ct.root == nil {
+			ct.root = trace.SpanFromContext(ct.Context)
+		}
 		if err != nil {
 			attrs = append(attrs, attribute.String(hook+".error", err.Error()))
 		}
@@ -272,7 +278,7 @@ func (ct *clientTracer) span(hook string) trace.Span {
 }
 
 func (ct *clientTracer) getConn(host string) {
-	ct.start("http.getconn", "http.getconn", semconv.HTTPHostKey.String(host))
+	ct.start("http.getconn", "http.getconn", ct.semconv.TraceAttributes(host)...)
 }
 
 func (ct *clientTracer) gotConn(info httptrace.GotConnInfo) {
@@ -297,11 +303,11 @@ func (ct *clientTracer) gotFirstResponseByte() {
 }
 
 func (ct *clientTracer) dnsStart(info httptrace.DNSStartInfo) {
-	ct.start("http.dns", "http.dns", semconv.HTTPHostKey.String(info.Host))
+	ct.start("http.dns", "http.dns", ct.semconv.TraceAttributes(info.Host)...)
 }
 
 func (ct *clientTracer) dnsDone(info httptrace.DNSDoneInfo) {
-	var addrs []string
+	addrs := make([]string, 0, len(info.Addrs))
 	for _, netAddr := range info.Addrs {
 		addrs = append(addrs, netAddr.String())
 	}
@@ -309,14 +315,16 @@ func (ct *clientTracer) dnsDone(info httptrace.DNSDoneInfo) {
 }
 
 func (ct *clientTracer) connectStart(network, addr string) {
-	ct.start("http.connect."+addr, "http.connect",
+	ct.start(
+		"http.connect."+addr, "http.connect",
 		HTTPRemoteAddr.String(addr),
 		HTTPConnectionStartNetwork.String(network),
 	)
 }
 
 func (ct *clientTracer) connectDone(network, addr string, err error) {
-	ct.end("http.connect."+addr, err,
+	ct.end(
+		"http.connect."+addr, err,
 		HTTPConnectionDoneAddr.String(addr),
 		HTTPConnectionDoneNetwork.String(network),
 	)
@@ -342,7 +350,7 @@ func (ct *clientTracer) wroteHeaderField(k string, v []string) {
 	if _, ok := ct.redactedHeaders[k]; ok {
 		value = "****"
 	}
-	ct.root.SetAttributes(attribute.String("http."+k, value))
+	ct.root.SetAttributes(attribute.String("http.request.header."+k, value))
 }
 
 func (ct *clientTracer) wroteHeaders() {
@@ -364,15 +372,21 @@ func (ct *clientTracer) got100Continue() {
 	if ct.useSpans {
 		span = ct.span("http.receive")
 	}
-	span.AddEvent("GOT 100 - Continue")
+	// It's possible that Got100Continue is called before GotFirstResponseByte at which point span can be `nil`.
+	if span != nil {
+		span.AddEvent("GOT 100 - Continue")
+	}
 }
 
 func (ct *clientTracer) wait100Continue() {
 	span := ct.root
 	if ct.useSpans {
-		span = ct.span("http.receive")
+		span = ct.span("http.send")
 	}
-	span.AddEvent("GOT 100 - Wait")
+	// It's possible that Wait100Continue is called before GotFirstResponseByte at which point span can be `nil`.
+	if span != nil {
+		span.AddEvent("GOT 100 - Wait")
+	}
 }
 
 func (ct *clientTracer) got1xxResponse(code int, header textproto.MIMEHeader) error {
@@ -380,10 +394,13 @@ func (ct *clientTracer) got1xxResponse(code int, header textproto.MIMEHeader) er
 	if ct.useSpans {
 		span = ct.span("http.receive")
 	}
-	span.AddEvent("GOT 1xx", trace.WithAttributes(
-		HTTPStatus.Int(code),
-		HTTPHeaderMIME.String(sm2s(header)),
-	))
+	// It's possible that Got1xxResponse is called before GotFirstResponseByte at which point span can be `nil`.
+	if span != nil {
+		span.AddEvent("GOT 1xx", trace.WithAttributes(
+			HTTPStatus.Int(code),
+			HTTPHeaderMIME.String(sm2s(header)),
+		))
+	}
 	return nil
 }
 
@@ -398,11 +415,11 @@ func sm2s(value map[string][]string) string {
 	var buf strings.Builder
 	for k, v := range value {
 		if buf.Len() != 0 {
-			buf.WriteString(",")
+			_, _ = buf.WriteString(",")
 		}
-		buf.WriteString(k)
-		buf.WriteString("=")
-		buf.WriteString(sliceToString(v))
+		_, _ = buf.WriteString(k)
+		_, _ = buf.WriteString("=")
+		_, _ = buf.WriteString(sliceToString(v))
 	}
 	return buf.String()
 }

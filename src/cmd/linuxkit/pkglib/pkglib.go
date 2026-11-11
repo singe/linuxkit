@@ -1,14 +1,16 @@
 package pkglib
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"text/template"
 
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/moby"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/util"
@@ -18,6 +20,8 @@ import (
 type pkgInfo struct {
 	Image        string            `yaml:"image"`
 	Org          string            `yaml:"org"`
+	Tag          string            `yaml:"tag,omitempty"` // default to {{.Hash}}
+	Dockerfile   string            `yaml:"dockerfile"`
 	Arches       []string          `yaml:"arches"`
 	ExtraSources []string          `yaml:"extra-sources"`
 	GitRepo      string            `yaml:"gitrepo"` // ??
@@ -49,15 +53,19 @@ type PkglibConfig struct {
 	HashPath     string
 	Dirty        bool
 	Dev          bool
+	Tag          string // Tag is a text/template string, defaults to {{.Hash}}
 }
 
+// NewPkgInfo returns a new pkgInfo with default values
 func NewPkgInfo() pkgInfo {
 	return pkgInfo{
 		Org:          "linuxkit",
-		Arches:       []string{"amd64", "arm64"},
+		Arches:       []string{"amd64", "arm64", "riscv64"},
+		Tag:          "{{.Hash}}",
 		GitRepo:      "https://github.com/linuxkit/linuxkit",
 		Network:      false,
 		DisableCache: false,
+		Dockerfile:   "Dockerfile",
 	}
 }
 
@@ -84,7 +92,10 @@ type Pkg struct {
 
 	// Internal state
 	path       string
+	buildYML   string // full path to the build.yml file, not just relative to path
+	dockerfile string
 	hash       string
+	tag        string
 	dirty      bool
 	commitHash string
 	git        *git
@@ -140,12 +151,15 @@ func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 			return nil, err
 		}
 
-		b, err := os.ReadFile(filepath.Join(pkgPath, cfg.BuildYML))
+		buildYmlFile := filepath.Join(pkgPath, cfg.BuildYML)
+		b, err := os.ReadFile(buildYmlFile)
 		if err != nil {
 			return nil, err
 		}
 
-		if err := yaml.Unmarshal(b, &pi); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(b))
+		dec.KnownFields(true)
+		if err := dec.Decode(&pi); err != nil {
 			return nil, err
 		}
 
@@ -187,7 +201,7 @@ func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 		for _, source := range pi.ExtraSources {
 			tmp := strings.Split(source, ":")
 			if len(tmp) != 2 {
-				return nil, fmt.Errorf("Bad source format in %s", source)
+				return nil, fmt.Errorf("bad source format in %s", source)
 			}
 			srcPath := filepath.Clean(tmp[0]) // Should work with windows paths
 			dstPath := path.Clean(tmp[1])     // 'path' here because this should be a Unix path
@@ -201,7 +215,7 @@ func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 				return nil, err
 			}
 			if g == nil {
-				return nil, fmt.Errorf("Source %s not in a git repository", srcPath)
+				return nil, fmt.Errorf("source %s not in a git repository", srcPath)
 			}
 			h, err := g.treeHash(srcPath, cfg.HashCommit)
 			if err != nil {
@@ -249,7 +263,24 @@ func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 				}
 			}
 		}
+		tagTmpl := pi.Tag
+		if cfg.Tag != "" {
+			tagTmpl = cfg.Tag
+		}
+		if tagTmpl == "" {
+			tagTmpl = "{{.Hash}}"
+		}
 
+		// calculate the tag to use based on the template and the pkgHash
+		tmpl, err := template.New("tag").Parse(tagTmpl)
+		if err != nil {
+			return nil, fmt.Errorf("invalid tag template: %v", err)
+		}
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, map[string]string{"Hash": pkgHash}); err != nil {
+			return nil, fmt.Errorf("failed to execute tag template: %v", err)
+		}
+		tag := buf.String()
 		pkgs = append(pkgs, Pkg{
 			image:         pi.Image,
 			org:           pi.Org,
@@ -265,7 +296,10 @@ func NewFromConfig(cfg PkglibConfig, args ...string) ([]Pkg, error) {
 			dockerDepends: dockerDepends,
 			dirty:         dirty,
 			path:          pkgPath,
+			buildYML:      buildYmlFile,
+			dockerfile:    pi.Dockerfile,
 			git:           git,
+			tag:           tag,
 		})
 	}
 	return pkgs, nil
@@ -279,10 +313,10 @@ func (p Pkg) Hash() string {
 // ReleaseTag returns the tag to use for a particular release of the package
 func (p Pkg) ReleaseTag(release string) (string, error) {
 	if release == "" {
-		return "", fmt.Errorf("A release tag is required")
+		return "", fmt.Errorf("a release tag is required")
 	}
 	if p.dirty {
-		return "", fmt.Errorf("Cannot release a dirty package")
+		return "", fmt.Errorf("cannot release a dirty package")
 	}
 	tag := p.org + "/" + p.image + ":" + release
 	return tag, nil
@@ -290,11 +324,16 @@ func (p Pkg) ReleaseTag(release string) (string, error) {
 
 // Tag returns the tag to use for the package
 func (p Pkg) Tag() string {
-	t := p.hash
+	t := p.tag
 	if t == "" {
 		t = "latest"
 	}
 	return p.org + "/" + p.image + ":" + t
+}
+
+// Image returns the image name without the tag
+func (p Pkg) Image() string {
+	return p.org + "/" + p.image
 }
 
 // FullTag returns a reference expanded tag
@@ -324,7 +363,26 @@ func (p Pkg) archSupported(want string) bool {
 
 func (p Pkg) cleanForBuild() error {
 	if p.commitHash != "HEAD" {
-		return fmt.Errorf("Cannot build from commit hash != HEAD")
+		return fmt.Errorf("cannot build from commit hash != HEAD")
+	}
+	return nil
+}
+
+func (p *Pkg) ProcessBuildArgs() error {
+	if p.buildArgs == nil {
+		return nil
+	}
+	var buildArgs []string
+	for _, arg := range *p.buildArgs {
+		transformedLine, err := TransformBuildArgValue(arg, p.buildYML)
+		if err != nil {
+			return fmt.Errorf("error processing build arg %q: %v", arg, err)
+		}
+		buildArgs = append(buildArgs, transformedLine...)
+	}
+	// Replace the original build args with the transformed ones
+	if len(buildArgs) > 0 {
+		p.buildArgs = &buildArgs
 	}
 	return nil
 }

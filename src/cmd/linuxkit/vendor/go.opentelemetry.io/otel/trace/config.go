@@ -1,20 +1,10 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package trace // import "go.opentelemetry.io/otel/trace"
 
 import (
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -25,6 +15,7 @@ type TracerConfig struct {
 	instrumentationVersion string
 	// Schema URL of the telemetry emitted by the Tracer.
 	schemaURL string
+	attrs     attribute.Set
 }
 
 // InstrumentationVersion returns the version of the library providing instrumentation.
@@ -32,15 +23,28 @@ func (t *TracerConfig) InstrumentationVersion() string {
 	return t.instrumentationVersion
 }
 
+// InstrumentationAttributes returns the attributes associated with the library
+// providing instrumentation.
+func (t *TracerConfig) InstrumentationAttributes() attribute.Set {
+	return t.attrs
+}
+
 // SchemaURL returns the Schema URL of the telemetry emitted by the Tracer.
 func (t *TracerConfig) SchemaURL() string {
 	return t.schemaURL
+}
+
+type experimentalOption interface {
+	Experimental()
 }
 
 // NewTracerConfig applies all the options to a returned TracerConfig.
 func NewTracerConfig(options ...TracerOption) TracerConfig {
 	var config TracerConfig
 	for _, option := range options {
+		if _, ok := option.(experimentalOption); ok {
+			continue
+		}
 		config = option.apply(config)
 	}
 	return config
@@ -77,7 +81,7 @@ func (cfg *SpanConfig) Timestamp() time.Time {
 	return cfg.timestamp
 }
 
-// StackTrace checks whether stack trace capturing is enabled.
+// StackTrace reports whether stack trace capturing is enabled.
 func (cfg *SpanConfig) StackTrace() bool {
 	return cfg.stackTrace
 }
@@ -106,6 +110,9 @@ func (cfg *SpanConfig) SpanKind() SpanKind {
 func NewSpanStartConfig(options ...SpanStartOption) SpanConfig {
 	var c SpanConfig
 	for _, option := range options {
+		if _, ok := option.(experimentalOption); ok {
+			continue
+		}
 		c = option.applySpanStart(c)
 	}
 	return c
@@ -118,13 +125,16 @@ func NewSpanStartConfig(options ...SpanStartOption) SpanConfig {
 func NewSpanEndConfig(options ...SpanEndOption) SpanConfig {
 	var c SpanConfig
 	for _, option := range options {
+		if _, ok := option.(experimentalOption); ok {
+			continue
+		}
 		c = option.applySpanEnd(c)
 	}
 	return c
 }
 
 // SpanStartOption applies an option to a SpanConfig. These options are applicable
-// only when the span is created
+// only when the span is created.
 type SpanStartOption interface {
 	applySpanStart(SpanConfig) SpanConfig
 }
@@ -158,7 +168,7 @@ func (cfg *EventConfig) Timestamp() time.Time {
 	return cfg.timestamp
 }
 
-// StackTrace checks whether stack trace capturing is enabled.
+// StackTrace reports whether stack trace capturing is enabled.
 func (cfg *EventConfig) StackTrace() bool {
 	return cfg.stackTrace
 }
@@ -170,6 +180,9 @@ func (cfg *EventConfig) StackTrace() bool {
 func NewEventConfig(options ...EventOption) EventConfig {
 	var c EventConfig
 	for _, option := range options {
+		if _, ok := option.(experimentalOption); ok {
+			continue
+		}
 		c = option.applyEvent(c)
 	}
 	if c.timestamp.IsZero() {
@@ -217,7 +230,7 @@ var _ SpanStartEventOption = attributeOption{}
 
 // WithAttributes adds the attributes related to a span life-cycle event.
 // These attributes are used to describe the work a Span represents when this
-// option is provided to a Span's start or end events. Otherwise, these
+// option is provided to a Span's start event. Otherwise, these
 // attributes provide additional information about the event being recorded
 // (e.g. error, state change, processing progress, system event).
 //
@@ -261,6 +274,7 @@ func (o stackTraceOption) applyEvent(c EventConfig) EventConfig {
 	c.stackTrace = bool(o)
 	return c
 }
+
 func (o stackTraceOption) applySpan(c SpanConfig) SpanConfig {
 	c.stackTrace = bool(o)
 	return c
@@ -304,6 +318,54 @@ func WithInstrumentationVersion(version string) TracerOption {
 	return tracerOptionFunc(func(cfg TracerConfig) TracerConfig {
 		cfg.instrumentationVersion = version
 		return cfg
+	})
+}
+
+// mergeSets returns the union of keys between a and b. Any duplicate keys will
+// use the value associated with b.
+func mergeSets(a, b attribute.Set) attribute.Set {
+	// NewMergeIterator uses the first value for any duplicates.
+	iter := attribute.NewMergeIterator(&b, &a)
+	merged := make([]attribute.KeyValue, 0, a.Len()+b.Len())
+	for iter.Next() {
+		merged = append(merged, iter.Attribute())
+	}
+	return attribute.NewSet(merged...)
+}
+
+// WithInstrumentationAttributes adds the instrumentation attributes.
+//
+// This is equivalent to calling [WithInstrumentationAttributeSet] with an
+// [attribute.Set] created from a clone of the passed attributes.
+// [WithInstrumentationAttributeSet] is recommended for more control.
+//
+// If multiple [WithInstrumentationAttributes] or [WithInstrumentationAttributeSet]
+// options are passed, the attributes will be merged together in the order
+// they are passed. Attributes with duplicate keys will use the last value passed.
+func WithInstrumentationAttributes(attr ...attribute.KeyValue) TracerOption {
+	set := attribute.NewSet(slices.Clone(attr)...)
+	return WithInstrumentationAttributeSet(set)
+}
+
+// WithInstrumentationAttributeSet adds the instrumentation attributes.
+//
+// If multiple [WithInstrumentationAttributes] or [WithInstrumentationAttributeSet]
+// options are passed, the attributes will be merged together in the order
+// they are passed. Attributes with duplicate keys will use the last value passed.
+func WithInstrumentationAttributeSet(set attribute.Set) TracerOption {
+	if set.Len() == 0 {
+		return tracerOptionFunc(func(config TracerConfig) TracerConfig {
+			return config
+		})
+	}
+
+	return tracerOptionFunc(func(config TracerConfig) TracerConfig {
+		if config.attrs.Len() == 0 {
+			config.attrs = set
+		} else {
+			config.attrs = mergeSets(config.attrs, set)
+		}
+		return config
 	})
 }
 

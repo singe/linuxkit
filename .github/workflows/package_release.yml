@@ -1,0 +1,38 @@
+name: Release Tagged Packages
+
+on:
+  create:
+
+jobs:
+  release:
+    name: Release packages
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/pkg-v')
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+    - name: Set up Go based on go.mod
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: 'src/cmd/linuxkit/go.mod'
+      id: go
+    - name: Ensure bin/ directory
+      run: mkdir -p bin
+    - name: Install linuxkit
+      run: |
+        go -C ./src/cmd/linuxkit build -o $(pwd)/bin/linuxkit 
+        sudo mv bin/linuxkit /usr/local/bin/
+    - name: Login to Docker Hub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Publish Packages as Release
+      # this should not build anything, as they all should be built already
+      # however, it can fail if we push the tag before the merge-to-master build is complete, since that may publish
+      # so *always* wait for any merge-to-master to complete before publishing pkg-v* tags
+      run: |
+        RELEASE_TAG=${GITHUB_REF#refs/tags/pkg-}
+        echo "RELEASE_TAG=${RELEASE_TAG}"
+        [ -n "${RELEASE_TAG}" ] || { echo "Not a tag"; exit 1; }
+        make OPTIONS="--skip-platforms linux/s390x" -C pkg push PUSHOPTIONS="--nobuild --release ${RELEASE_TAG}"

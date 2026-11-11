@@ -1,17 +1,17 @@
 kernel:
-  image: linuxkit/kernel:5.10.104
+  image: linuxkit/kernel:6.18.60
   cmdline: "console=ttyS0"
 init:
-  - linuxkit/init:144c9cee8aed9e30a16940f2bf1d3813883aceda
-  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
-  - linuxkit/containerd:d445de33c7f08470187b068d247b1c0dea240f0a
+  - linuxkit/init:075ff447b68e23feef95589c90010a039533e5b5
+  - linuxkit/runc:9442aa234715e751a16144f1d4ae3fd1a00fd492
+  - linuxkit/containerd:eb5daf20704109ea58abb38d2b808e0c3a7e3717
 onboot:
   - name: ltp
     image: linuxkit/test-ltp:0967388fb338867dddd3c1a72470a1a7cec5a0dd
     binds:
      - /etc/ltp/baseline:/etc/ltp/baseline
   - name: poweroff
-    image: linuxkit/poweroff:992d9c7531166fe071d945e8b2728d8b61eb8d5a
+    image: linuxkit/poweroff:4059858a555bed90c2280fa9b060b7a8f8de6d45
 files:
   - path: /etc/ltp/baseline
     contents: "100"

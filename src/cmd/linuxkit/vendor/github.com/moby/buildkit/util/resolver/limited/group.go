@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/images"
-	"github.com/containerd/containerd/remotes"
-	"github.com/docker/distribution/reference"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/remotes"
+	"github.com/distribution/reference"
+	"github.com/moby/buildkit/util/bklog"
 	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -20,7 +20,10 @@ type contextKeyT string
 
 var contextKey = contextKeyT("buildkit/util/resolver/limited")
 
-var Default = New(4)
+// DefaultMaxConcurrency is the default number of concurrent connections per registry.
+var DefaultMaxConcurrency int64 = 4
+
+var Default = New(int(DefaultMaxConcurrency))
 
 type Group struct {
 	mu   sync.Mutex
@@ -43,16 +46,7 @@ func (r *req) acquire(ctx context.Context, desc ocispecs.Descriptor) (context.Co
 	// json request get one additional connection
 	highPriority := strings.HasSuffix(desc.MediaType, "+json")
 
-	r.g.mu.Lock()
-	s, ok := r.g.sem[r.ref]
-	if !ok {
-		s = [2]*semaphore.Weighted{
-			semaphore.NewWeighted(int64(r.g.size)),
-			semaphore.NewWeighted(int64(r.g.size + 1)),
-		}
-		r.g.sem[r.ref] = s
-	}
-	r.g.mu.Unlock()
+	s := r.g.getOrInit(r.ref)
 	if !highPriority {
 		if err := s[0].Acquire(ctx, 1); err != nil {
 			return ctx, nil, err
@@ -81,6 +75,26 @@ func New(size int) *Group {
 
 func (g *Group) req(ref string) *req {
 	return &req{g: g, ref: domain(ref)}
+}
+
+func (g *Group) getOrInit(domain string) [2]*semaphore.Weighted {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	s, ok := g.sem[domain]
+	if !ok {
+		s = [2]*semaphore.Weighted{
+			semaphore.NewWeighted(int64(g.size)),
+			semaphore.NewWeighted(int64(g.size + 1)),
+		}
+		g.sem[domain] = s
+	}
+	return s
+}
+
+// SetMaxConcurrency sets the default maximum concurrency for the default group.
+func SetMaxConcurrency(size int) {
+	Default = New(size)
 }
 
 func (g *Group) WrapFetcher(f remotes.Fetcher, ref string) remotes.Fetcher {
@@ -119,7 +133,7 @@ func (f *fetcher) Fetch(ctx context.Context, desc ocispecs.Descriptor) (io.ReadC
 	rcw := &readCloser{ReadCloser: rc}
 	closer := func() {
 		if !rcw.closed {
-			logrus.Warnf("fetcher not closed cleanly: %s", desc.Digest)
+			bklog.G(ctx).Warnf("fetcher not closed cleanly: %s", desc.Digest)
 		}
 		release()
 	}

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/google/go-cmp/cmp"
@@ -117,8 +118,24 @@ func validateLayers(img v1.Image, opt ...Option) error {
 	diffids := []v1.Hash{}
 	udiffids := []v1.Hash{}
 	sizes := []int64{}
-	for _, layer := range layers {
+	for i, layer := range layers {
+		if mt, err := layer.MediaType(); err != nil {
+			return fmt.Errorf("getting mediaType[%d]: %w", i, err)
+		} else if !mt.IsLayer() {
+			continue
+		}
+
 		cl, err := computeLayer(layer)
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			// Errored while reading tar content of layer because a header or
+			// content section was not the correct length. This is most likely
+			// due to an incomplete download or otherwise interrupted process.
+			m, err := img.Manifest()
+			if err != nil {
+				return fmt.Errorf("undersized layer[%d] content", i)
+			}
+			return fmt.Errorf("undersized layer[%d] content: Manifest.Layers[%d].Size=%d", i, i, m.Layers[i].Size)
+		}
 		if err != nil {
 			return err
 		}
@@ -142,6 +159,14 @@ func validateLayers(img v1.Image, opt ...Option) error {
 
 	errs := []string{}
 	for i, layer := range layers {
+		mediaType, err := layer.MediaType()
+		if err != nil {
+			return err
+		}
+		if !mediaType.IsLayer() {
+			continue
+		}
+
 		digest, err := layer.Digest()
 		if err != nil {
 			return err
@@ -151,10 +176,6 @@ func validateLayers(img v1.Image, opt ...Option) error {
 			return err
 		}
 		size, err := layer.Size()
-		if err != nil {
-			return err
-		}
-		mediaType, err := layer.MediaType()
 		if err != nil {
 			return err
 		}

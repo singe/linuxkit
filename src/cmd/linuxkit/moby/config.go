@@ -1,21 +1,27 @@
 package moby
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/containerd/containerd/reference"
+	"github.com/containerd/containerd/v2/pkg/reference"
+	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/spec"
 	"github.com/linuxkit/linuxkit/src/cmd/linuxkit/util"
+	"github.com/moby/sys/capability"
 	imagespec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	log "github.com/sirupsen/logrus"
-	"github.com/syndtr/gocapability/capability"
 	"github.com/xeipuuv/gojsonschema"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
+
+var nameRE = regexp.MustCompile(`^[a-z0-9_-]*$`)
 
 // Moby is the type of a Moby config file
 type Moby struct {
@@ -25,8 +31,18 @@ type Moby struct {
 	Onshutdown []*Image     `yaml:"onshutdown" json:"onshutdown"`
 	Services   []*Image     `yaml:"services" json:"services"`
 	Files      []File       `yaml:"files" json:"files"`
+	Volumes    []*Volume    `yaml:"volumes" json:"volumes"`
 
 	initRefs []*reference.Spec
+	vols     map[string]*Volume
+}
+
+func (m Moby) InitRefs() []*reference.Spec {
+	return m.initRefs
+}
+
+func (m Moby) VolByName(name string) *Volume {
+	return m.vols[name]
 }
 
 // KernelConfig is the type of the config for a kernel
@@ -38,6 +54,10 @@ type KernelConfig struct {
 	UCode   *string `yaml:"ucode,omitempty" json:"ucode,omitempty"`
 
 	ref *reference.Spec
+}
+
+func (k KernelConfig) Ref() *reference.Spec {
+	return k.ref
 }
 
 // File is the type of a file specification
@@ -54,11 +74,62 @@ type File struct {
 	GID       interface{} `yaml:"gid,omitempty" json:"gid,omitempty"`
 }
 
+// Volume is the type of a volume specification
+type Volume struct {
+	Name      string   `yaml:"name" json:"name"`
+	Image     string   `yaml:"image,omitempty" json:"image,omitempty"`
+	ReadOnly  bool     `yaml:"readonly,omitempty" json:"readonly,omitempty"`
+	Format    string   `yaml:"format,omitempty" json:"format,omitempty"`
+	Platforms []string `yaml:"platforms,omitempty" json:"platforms,omitempty"`
+	ref       *reference.Spec
+}
+
+func (v Volume) ImageRef() *reference.Spec {
+	return v.ref
+}
+
+func (v Volume) BaseDir() string {
+	return volumeBaseDir(v.Name)
+}
+
+func (v Volume) LowerDir() string {
+	return volumeLowerDir(v.Name)
+}
+
+func (v Volume) TmpDir() string {
+	return volumeTmpDir(v.Name)
+}
+
+func (v Volume) MergedDir() string {
+	return volumeMergedDir(v.Name)
+}
+
 // Image is the type of an image config
 type Image struct {
 	Name        string `yaml:"name" json:"name"`
 	Image       string `yaml:"image" json:"image"`
 	ImageConfig `yaml:",inline"`
+}
+
+// Equal check if another Image is functionally equal to this one.
+// Takes the easy path by marshaling both into yaml and then comparing the yaml.
+// There may be a more efficient way to do this, but this is simplest.
+func (i *Image) Equal(o *Image) bool {
+	// if we are going to compare, we must canonicalized both image names
+	i0 := i
+	i0.Image = util.ReferenceExpand(i.Image)
+	iy, err := yaml.Marshal(i0)
+	if err != nil {
+		return false
+	}
+
+	o0 := o
+	o0.Image = util.ReferenceExpand(o.Image)
+	oy, err := yaml.Marshal(o)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(iy, oy)
 }
 
 // ImageConfig is the configuration part of Image, it is the subset
@@ -102,6 +173,10 @@ type ImageConfig struct {
 	Runtime *Runtime `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 
 	ref *reference.Spec
+}
+
+func (i ImageConfig) Ref() *reference.Spec {
+	return i.ref
 }
 
 // Device specifies a device to be exposed to the container.
@@ -175,6 +250,37 @@ func uniqueServices(m Moby) error {
 	return nil
 }
 
+func uniqueVolumes(m *Moby) error {
+	// volume names must be unique
+	m.vols = map[string]*Volume{}
+	for _, v := range m.Volumes {
+		if !nameRE.MatchString(v.Name) {
+			return fmt.Errorf("invalid volume name: %s", v.Name)
+		}
+		if _, ok := m.vols[v.Name]; ok {
+			return fmt.Errorf("duplicate volume name: %s", v.Name)
+		}
+		m.vols[v.Name] = v
+	}
+	return nil
+}
+
+func volumeBaseDir(name string) string {
+	return path.Join(allVolumesBaseDir, name)
+}
+
+func volumeLowerDir(name string) string {
+	return path.Join(volumeBaseDir(name), "lower")
+}
+
+func volumeTmpDir(name string) string {
+	return path.Join(volumeBaseDir(name), "tmp")
+}
+
+func volumeMergedDir(name string) string {
+	return path.Join(volumeBaseDir(name), "merged")
+}
+
 func extractReferences(m *Moby) error {
 	if m.Kernel.Image != "" {
 		r, err := reference.Parse(util.ReferenceExpand(m.Kernel.Image))
@@ -211,10 +317,20 @@ func extractReferences(m *Moby) error {
 		}
 		image.ref = &r
 	}
+	for _, image := range m.Volumes {
+		if image.Image == "" {
+			continue
+		}
+		r, err := reference.Parse(util.ReferenceExpand(image.Image))
+		if err != nil {
+			return fmt.Errorf("extract volume image reference: %v", err)
+		}
+		image.ref = &r
+	}
 	return nil
 }
 
-func updateImages(m *Moby) {
+func UpdateImages(m *Moby) {
 	if m.Kernel.ref != nil {
 		m.Kernel.Image = m.Kernel.ref.String()
 	}
@@ -239,13 +355,14 @@ func updateImages(m *Moby) {
 }
 
 // NewConfig parses a config file
-func NewConfig(config []byte) (Moby, error) {
+func NewConfig(config []byte, packageFinder spec.PackageResolver) (Moby, error) {
 	m := Moby{}
 
 	// Parse raw yaml
 	var rawYaml interface{}
-	err := yaml.Unmarshal(config, &rawYaml)
-	if err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(config))
+	dec.KnownFields(true)
+	if err := dec.Decode(&rawYaml); err != nil {
 		return m, err
 	}
 
@@ -267,6 +384,12 @@ func NewConfig(config []byte) (Moby, error) {
 		return m, fmt.Errorf("invalid configuration file")
 	}
 
+	// process the template fields
+	config, err = processTemplates(config, packageFinder)
+	if err != nil {
+		return m, err
+	}
+
 	// Parse yaml
 	err = yaml.Unmarshal(config, &m)
 	if err != nil {
@@ -274,6 +397,10 @@ func NewConfig(config []byte) (Moby, error) {
 	}
 
 	if err := uniqueServices(m); err != nil {
+		return m, err
+	}
+
+	if err := uniqueVolumes(&m); err != nil {
 		return m, err
 	}
 
@@ -311,13 +438,18 @@ func AppendConfig(m0, m1 Moby) (Moby, error) {
 	moby.Services = append(moby.Services, m1.Services...)
 	moby.Files = append(moby.Files, m1.Files...)
 	moby.initRefs = append(moby.initRefs, m1.initRefs...)
+	moby.Volumes = append(moby.Volumes, m1.Volumes...)
+	moby.vols = map[string]*Volume{}
+	for k, v := range m1.vols {
+		moby.vols[k] = v
+	}
 
 	return moby, uniqueServices(moby)
 }
 
 // NewImage validates an parses yaml or json for a Image
 func NewImage(config []byte) (Image, error) {
-	log.Debugf("Reading label config: %s", string(config))
+	log.Tracef("Reading label config: %s", string(config))
 
 	mi := Image{}
 
@@ -652,7 +784,7 @@ func assignStringEmpty4(v1, v2, v3, v4 string) string {
 
 func getAllCapabilities() []string {
 	var caps []string
-	for _, cap := range capability.List() {
+	for _, cap := range capability.ListKnown() {
 		caps = append(caps, "CAP_"+strings.ToUpper(cap.String()))
 	}
 	return caps
@@ -660,7 +792,7 @@ func getAllCapabilities() []string {
 
 var allCaps = getAllCapabilities()
 
-func idNumeric(v interface{}, idMap map[string]uint32) (uint32, error) {
+func IDNumeric(v interface{}, idMap map[string]uint32) (uint32, error) {
 	switch id := v.(type) {
 	case nil:
 		return uint32(0), nil
@@ -675,9 +807,9 @@ func idNumeric(v interface{}, idMap map[string]uint32) (uint32, error) {
 				return v, nil
 			}
 		}
-		return 0, fmt.Errorf("Cannot find id: %s", id)
+		return 0, fmt.Errorf("cannot find id: %s", id)
 	default:
-		return 0, fmt.Errorf("Bad type for uid or gid")
+		return 0, fmt.Errorf("bad type for uid or gid")
 	}
 }
 
@@ -735,7 +867,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	for _, t := range assignStrings(label.Tmpfs, yaml.Tmpfs) {
 		parts := strings.Split(t, ":")
 		if len(parts) > 2 {
-			return oci, runtime, fmt.Errorf("Cannot parse tmpfs, too many ':': %s", t)
+			return oci, runtime, fmt.Errorf("cannot parse tmpfs, too many ':': %s", t)
 		}
 		dest := parts[0]
 		var opts []string
@@ -747,10 +879,10 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	for _, b := range assignStrings(mergeStrings(label.Binds, yaml.BindsAdd), yaml.Binds) {
 		parts := strings.Split(b, ":")
 		if len(parts) < 2 {
-			return oci, runtime, fmt.Errorf("Cannot parse bind, missing ':': %s", b)
+			return oci, runtime, fmt.Errorf("cannot parse bind, missing ':': %s", b)
 		}
 		if len(parts) > 3 {
-			return oci, runtime, fmt.Errorf("Cannot parse bind, too many ':': %s", b)
+			return oci, runtime, fmt.Errorf("cannot parse bind, too many ':': %s", b)
 		}
 		src := parts[0]
 		dest := parts[1]
@@ -776,7 +908,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 			tp = "tmpfs"
 		}
 		if tp == "" {
-			return oci, runtime, fmt.Errorf("Mount for destination %s is missing type", dest)
+			return oci, runtime, fmt.Errorf("mount for destination %s is missing type", dest)
 		}
 		if src == "" {
 			// usually sane, eg proc, tmpfs etc
@@ -786,7 +918,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 			dest = defaultMountpoint(tp)
 		}
 		if dest == "" {
-			return oci, runtime, fmt.Errorf("Mount type %s is missing destination", tp)
+			return oci, runtime, fmt.Errorf("mount type %s is missing destination", tp)
 		}
 		mounts[dest] = specs.Mount{Destination: dest, Type: tp, Source: src, Options: opts}
 	}
@@ -911,7 +1043,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 				var err error
 				soft, err = strconv.ParseUint(softString, 10, 64)
 				if err != nil {
-					return oci, runtime, fmt.Errorf("Cannot parse %s as uint64: %v", softString, err)
+					return oci, runtime, fmt.Errorf("cannot parse %s as uint64: %v", softString, err)
 				}
 			}
 			hardString := strings.TrimSpace(rs[2])
@@ -921,7 +1053,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 				var err error
 				hard, err = strconv.ParseUint(hardString, 10, 64)
 				if err != nil {
-					return oci, runtime, fmt.Errorf("Cannot parse %s as uint64: %v", hardString, err)
+					return oci, runtime, fmt.Errorf("cannot parse %s as uint64: %v", hardString, err)
 				}
 			}
 			switch limit {
@@ -944,10 +1076,10 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 				"RLIMIT_RTTIME":
 				rlimits = append(rlimits, specs.POSIXRlimit{Type: limit, Soft: soft, Hard: hard})
 			default:
-				return oci, runtime, fmt.Errorf("Unknown limit: %s", origLimit)
+				return oci, runtime, fmt.Errorf("unknown limit: %s", origLimit)
 			}
 		default:
-			return oci, runtime, fmt.Errorf("Cannot parse rlimit: %s", rlimitsString)
+			return oci, runtime, fmt.Errorf("cannot parse rlimit: %s", rlimitsString)
 		}
 	}
 
@@ -955,17 +1087,17 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 	uidIf := assignInterface(label.UID, yaml.UID)
 	gidIf := assignInterface(label.GID, yaml.GID)
 	agIf := assignInterfaceArray(label.AdditionalGids, yaml.AdditionalGids)
-	uid, err := idNumeric(uidIf, idMap)
+	uid, err := IDNumeric(uidIf, idMap)
 	if err != nil {
 		return oci, runtime, err
 	}
-	gid, err := idNumeric(gidIf, idMap)
+	gid, err := IDNumeric(gidIf, idMap)
 	if err != nil {
 		return oci, runtime, err
 	}
 	var additionalGroups []uint32
 	for _, id := range agIf {
-		ag, err := idNumeric(id, idMap)
+		ag, err := IDNumeric(id, idMap)
 		if err != nil {
 			return oci, runtime, err
 		}
@@ -1025,7 +1157,7 @@ func ConfigToOCI(yaml *Image, config imagespec.ImageConfig, idMap map[string]uin
 		}
 		mode, err := strconv.ParseInt(device.Mode, 8, 32)
 		if err != nil {
-			return oci, runtime, fmt.Errorf("Cannot parse device mode as octal value: %v", err)
+			return oci, runtime, fmt.Errorf("cannot parse device mode as octal value: %v", err)
 		}
 		fileMode := os.FileMode(mode)
 		linuxDevice := specs.LinuxDevice{
@@ -1069,5 +1201,35 @@ func deviceCgroup(device specs.LinuxDevice) specs.LinuxDeviceCgroup {
 		Major:  &device.Major,
 		Minor:  &device.Minor,
 		Access: "rwm", // read, write, mknod
+	}
+}
+
+// processTemplates given a raw config []byte and a package finder, process the templates to find the packages.
+// This eventually should expand to other types of templates. Since we only have @pkg: for now,
+// this will do to start.
+func processTemplates(b []byte, packageFinder spec.PackageResolver) ([]byte, error) {
+	if packageFinder == nil {
+		return b, nil
+	}
+	var node yaml.Node
+	if err := yaml.Unmarshal(b, &node); err != nil {
+		return nil, err
+	}
+	handleTemplate(&node, packageFinder)
+	return yaml.Marshal(&node)
+}
+
+func handleTemplate(node *yaml.Node, packageFinder spec.PackageResolver) {
+	switch node.Kind {
+	case yaml.SequenceNode, yaml.MappingNode, yaml.DocumentNode:
+		for i := 0; i < len(node.Content); i++ {
+			handleTemplate(node.Content[i], packageFinder)
+		}
+	case yaml.ScalarNode:
+		val := node.Value
+		if resolved, err := packageFinder(node.Value); err == nil {
+			val = resolved
+		}
+		node.Value = val
 	}
 }

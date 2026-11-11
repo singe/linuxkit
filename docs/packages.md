@@ -50,12 +50,14 @@ A package source consists of a directory containing at least two files:
 
 - `image` _(string)_: *(mandatory)* The name of the image to build
 - `org` _(string)_: The hub/registry organisation to which this package belongs
+- `tag` _(string)_: The tag to use for the image, can be fixed string or template (default: `{{.Hash}}`)
+- `dockerfile` _(string)_: The dockerfile to use to build this package, must be in this directory or below (default: `Dockerfile`)
 - `arches` _(list of string)_: The architectures which this package should be built for (valid entries are `GOARCH` names)
 - `extra-sources` _(list of strings)_: Additional sources for the package outside the package directory. The format is `src:dst`, where `src` can be relative to the package directory and `dst` is the destination in the build context. This is useful for sharing files, such as vendored go code, between packages.
 - `gitrepo` _(string)_: The git repository where the package source is kept.
 - `network` _(bool)_: Allow network access during the package build (default: no)
 - `disable-cache` _(bool)_: Disable build cache for this package (default: no)
-- `buildArgs` will forward a list of build arguments down to docker. As if `--build-arg` was specified during `docker build`
+- `buildArgs` will forward a list of build arguments down to docker. As if `--build-arg` was specified during `docker build`. See [BuildArgs][BuildArgs] for more information.
 - `config`: _(struct `github.com/moby/tool/src/moby.ImageConfig`)_: Image configuration, marshalled to JSON and added as `org.mobyproject.config` label on image (default: no label)
 - `depends`: Contains information on prerequisites which must be satisfied in order to build the package. Has subfields:
     - `docker-images`: Docker images to be made available (as `tar` files via `docker image save`) within the package build context. Contains the following nested fields:
@@ -194,18 +196,30 @@ linuxkit looks for contexts in the following descending order of priority:
 
 1. CLI option `--builders <platform>=<context>,<platform>=<context>`, e.g. `--builders linux/arm64=linuxkit-arm64,linux/amd64=default`
 1. Environment variable `LINUXKIT_BUILDERS=<platform>=<context>,<platform>=<context>`, e.g. `LINUXKIT_BUILDERS=linux/arm64=linuxkit-arm64,linux/amd64=default`
+1. Global `--context <name>` option
+1. Environment variable `DOCKER_CONTEXT`
+1. Environment variable `DOCKER_HOST`, using Docker's special `default` context
 1. Existing context named `linuxkit-<platform>`, e.g. `linuxkit-linux-arm64` or `linuxkit-linux-s390x`, with "/" replaced by "-", as "/" is an invalid character.
-1. Default context
+1. Existing context named `desktop-linux`
+1. Literal context named `default`
 
-If a builder name is provided for a specific platform, and it doesn't exist, it will be treated as a fatal error.
+Platform mappings merge per platform, with flag entries replacing environment entries.
+Global explicit and environment overrides take precedence over automatic context discovery.
+The saved current context set by `docker context use` is ignored.
+If a selected context is missing or its builder fails, LinuxKit reports the error without
+switching daemons. Only an absent automatically discovered context falls through.
+See [Docker contexts and container backends](docker-contexts.md) for complete override,
+image-output, Docker Desktop, Colima, OrbStack, Podman, and troubleshooting guidance.
 
 #### Examples
 
+Unless otherwise specified, these examples assume no general Docker context overrides.
+
 ##### Simple build
 
-There are no contexts starting with `linuxkit-`, no environment variable `LINUXKIT_BUILDERS`, no command-line argument `--builders`.
+There are no contexts starting with `linuxkit-`, no environment variable `LINUXKIT_BUILDERS`, no command-line argument `--builders`, and no general Docker context overrides.
 
-linuxkit will build any requested packages using `default` context on the local platform, with a container (created, if necessary) named `linuxkit-builder`.
+linuxkit will build any requested packages using `desktop-linux` if that context exists, otherwise `default`, with a container (created, if necessary) named `linuxkit-builder`.
 Builds for the same architecture will be native, builds for other platforms will use either qemu or cross-building.
 
 ##### Specified target
@@ -219,11 +233,11 @@ linuxkit pkg build --platforms=linux/arm64,linux/amd64 --builders linux/arm64=my
 linuxkit will build:
 
 * for arm64 using the context `my-remote-arm64`, since you specified in `--builders` to use `my-remote-arm64` for `linux/arm64`
-* for amd64 using the context `default`, as that is the default fallback
+* for amd64 using `desktop-linux` if that context exists, otherwise `default`, as that is the fallback
 
 The same would happen if you used `LINUXKIT_BUILDERS=linux/arm64=my-remote-arm64` instead of the `--builders` flag.
 
-In both cases - the remote context `my-remote-arm64` and the local `default` context - it will do the build inside
+In both cases - the remote context `my-remote-arm64` and the automatic `desktop-linux`/`default` context - it will do the build inside
 a container named `linuxkit-builder`.
 
 ##### Named context
@@ -237,7 +251,7 @@ linuxkit pkg build --platforms=linux/arm64,linux/amd64
 linuxkit will build:
 
 * for arm64 using the context `linuxkit-linux-arm64`, since there is a context with the name `linuxkit-<platform>`, and you did not override it using `--builders` or the environment variable `LINUXKIT_BUILDERS`
-* for amd64 using the context `default` and the `linuxkit` builder, as that is the default fallback
+* for amd64 using `desktop-linux` if that context exists, otherwise `default`; in either case it uses the `linuxkit-builder` container
 
 ##### Combination
 
@@ -252,7 +266,7 @@ linuxkit will build:
 * for arm64 using the context `linuxkit-linux-arm64`, since there is a context with the name `linuxkit-<platform>`, and you did not override that particular architecture using `--builders` or the environment variable `LINUXKIT_BUILDERS`
 * for amd64 using the context `my-remote-builder-amd64`, since you specified for that architecture using `--builders`
 
-The same would happen if you used `LINUXKIT_BUILDERS=linux/arm64=my-remote-builder-amd64` instead of the `--builders` flag.
+The same would happen if you used `LINUXKIT_BUILDERS=linux/amd64=my-remote-builder-amd64` instead of the `--builders` flag.
 
 ##### Missing context
 
@@ -271,6 +285,8 @@ When building packages, the following build-args automatically are set for you:
 * `SOURCE` - the source repository of the package
 * `REVISION` - the git commit that was used for the build
 * `GOPKGVERSION` - the go package version or pseudo-version per https://go.dev/ref/mod#glos-pseudo-version
+* `PKG_HASH` - the git tree hash of the package directory, e.g. `45a1ad5919f0b6acf0f0cf730e9434abfae11fe6`; tag part of `linuxkit pkg show-tag`
+* `PKG_IMAGE` - the name of the image that is being built, e.g. `linuxkit/init`; image name part of `linuxkit pkg show-tag`. Combine with `PKG_HASH` for the full tag.
 
 Note that the above are set **only** if you do not set them in `build.yaml`. Your settings _always_
 override these built-in ones.
@@ -377,3 +393,100 @@ ARG all_proxy
 
 LinuxKit does not judge between lower-cased or upper-cased variants of these options, e.g. `http_proxy` vs `HTTP_PROXY`,
 as `docker build` does not either. It just passes them through "as-is".
+
+### Environment Variables
+
+The following environment variables can be used to configure `linuxkit` without
+modifying command-line invocations — useful for CI/CD runners and shared build
+scripts. CLI flags always take precedence over env vars, which take precedence
+over built-in defaults.
+
+| Variable | Equivalent flag | Scope | Description |
+|---|---|---|---|
+| `LINUXKIT_MIRROR` | `--mirror` | All commands | Space- or comma-separated list of mirror specs, each in `[<registry>=]<url>` format (same as `--mirror`). E.g. `LINUXKIT_MIRROR=docker.io=http://mymirror.local` |
+| `LINUXKIT_PKG_ORG` | `--org` | `pkg` subcommands | Override the registry organisation used when tagging and pushing packages. E.g. `LINUXKIT_PKG_ORG=myorg/lfedge` |
+| `LINUXKIT_BUILDER_IMAGE` | `--builder-image` | `pkg build` | buildkit container image to use. Useful when the builder image must come from an internal mirror. |
+| `LINUXKIT_BUILDER_CONFIG` | `--builder-config` | `pkg build` | Path to a buildkit `config.toml` file. The primary way to configure buildkit's own registry mirrors for `FROM` pulls inside Dockerfiles. |
+| `LINUXKIT_BUILDER_NAME` | `--builder-name` | `pkg build` | Name of the buildkit builder container. |
+| `LINUXKIT_BUILDERS` | `--builders` | `pkg build` | Platform-to-builder-context mapping; see [Providing native builder nodes](#providing-native-builder-nodes). |
+| `LINUXKIT_CACHE` | `--cache` | All commands | Path to the linuxkit OCI image cache directory (default `~/.linuxkit/cache`). |
+
+#### Registry mirrors in CI
+
+There are two layers of registry access in `linuxkit pkg build`, each requiring
+its own mirror configuration:
+
+1. **linuxkit's own pulls** (cache lookups, `show-tag`, `cache pull`, etc.) —
+   configure via `LINUXKIT_MIRROR` or `--mirror`.
+
+2. **buildkit's pulls** (`FROM` and `COPY --from` inside Dockerfiles) —
+   buildkit has its own registry client. Configure its mirrors via a
+   `config.toml` file passed through `LINUXKIT_BUILDER_CONFIG` or
+   `--builder-config`. See the
+   [buildkit registry configuration docs](https://github.com/moby/buildkit/blob/master/docs/buildkitd.toml.md)
+   for the file format.
+
+## Build Args
+
+`linuxkit` does not support passing random CLI flags for build arguments when building packages.
+This is inline with its philosophy, of having as reproducible builds as possible, which requires
+everything to be available on disk and in the repository.
+
+It is possible to bypass this, but this is not recommended.
+
+As described in [Preset build arguments][Preset build arguments], linuxkit automatically sets some build arguments
+when building packages. However, you can also set your own build arguments, which will be passed to the
+`docker build` command.
+You can include your own build args in several ways.
+
+* `build.yml` - you can add a `buildArgs` field to the `build.yml` file, which will be passed as `--build-arg` to `docker build`.
+* `linuxkit pkg build` - you can pass the `--build-arg-file <file>` flag, with one `<key>=<value>` pair per line, which will be passed as `--build-arg` to `docker build`.
+
+When parsing for build args, whether from `build.yml`'s `buildArgs` field or from the `--build-arg-file`,
+linuxkit has support for certain calculated build args for the value of the arg. You can set these using the following syntax.
+
+All calculated build args are prefixed with `@lkt:`.
+
+* `VAR=@lkt:pkg:<path>` - the linuxkit package hash of the path, as determined by `linuxkit pkg show-tag <path>`. The `<path>` can be absolute, or if provided as a relative path, it is relative to the working directory of the file. For example, if provided in the `buildArgs` section of `build.yml`, it is relative to the package directory; if provided in `--build-arg-file <file>`, it is relative to the directory in which <file> exists.
+
+For example:
+
+```yaml
+buildArgs:
+  - DEP_HASH=@lkt:pkg:/usr/local/foo # will be replaced with the value of `linuxkit pkg show-tag /usr/local/foo`
+  - REL_HASH=@lkt:pkg:foo # will be replaced with the value of `linuxkit pkg show-tag foo` relative to this build.yml file
+```
+
+* `VAR_%=@lkt:pkgs:<paths>` - (note `pkgs` plural) the linuxkit package hashes of the multiple packages satisfied by `<paths>`. linuxkit will get the linuxkit package hash of each path in `<paths>`, as determined by `linuxkit pkg show-tag <path>`. The `<paths>` can be absolute, or if provided as a relative path, it is relative to the working directory of the file which contains the build arg, whether `build.yml` in a package or the build arg
+file provided to `--build-arg-file <file>`. The `<paths>` supports basic shell globbing, such as `./foo/*` or `/var/foo{1,2,3}`. Globs that start with `.` will be ignored, e.g. `foo/*` will match `foo/one` and `foo/two` but not `foo/.git` and `foo/.bar`. For each package in `<paths>`, it will create a build arg with the name `VAR_<package-name>` and the value of the package hash, where: the `%` is replaced with the name of the package; an all `/` and `-` characters are replaced with `_`; all characters are upper-cased.
+
+There _must_ be at least one valid environment variable character before the `%` character.
+
+For example:
+
+```yaml
+buildArgs:
+  - DEP_HASH_%=@lkt:pkgs:/usr/local/foo/* 
+```
+
+If there are packages in `/usr/local/foo/` named `bar`, `baz`, and `qux`, and each of them has a package as shown
+by `linuxkit pkg show-tag` as `linuxkit/bar:123abc`, `linuxkit/baz:aabb666`, and `linuxkit/qux:bbcc777`, this will create the following build args:
+
+```
+DEP_HASH_LINUXKIT_BAR=linuxkit/bar:123abc
+DEP_HASH_LINUXKIT_BAZ=linuxkit/baz:aabb666
+DEP_HASH_LINUXKIT_QUX=linuxkit/qux:bbcc777
+```
+
+## Releases
+
+Normally, whenever a package is updated, CI will build and push the package to Docker Hub by calling `linuxkit pkg push`.
+This automatically creates a tag based on the git tree hash of the package's directory.
+For example, the package in `./pkg/init` is tagged as `linuxkit/init:45a1ad5919f0b6acf0f0cf730e9434abfae11fe6`.
+
+In addition, you can release semver tags for packages by adding a tag to the git repository that begins with `pkg-` and is
+followed by a valid semver tag. For example, `pkg-v1.0.0`. This will cause CI to build and push the package to Docker Hub
+with the tag `v1.0.0`.
+
+Pure semver tags, like `v1.0.0`, are not used for package releases. They are used for the linuxkit project itself and to
+publish releases of the `linuxkit` binary.

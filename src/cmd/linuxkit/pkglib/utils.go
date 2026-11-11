@@ -9,13 +9,13 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/platforms"
 	"github.com/docker/go-units"
 	buildkitClient "github.com/moby/buildkit/client"
 )
 
 func printTableHeader(tw *tabwriter.Writer) {
-	fmt.Fprintln(tw, "ID\tRECLAIMABLE\tSIZE\tLAST ACCESSED")
+	_, _ = fmt.Fprintln(tw, "ID\tRECLAIMABLE\tSIZE\tLAST ACCESSED")
 }
 
 func printTableRow(tw *tabwriter.Writer, di *buildkitClient.UsageInfo) {
@@ -31,7 +31,7 @@ func printTableRow(tw *tabwriter.Writer, di *buildkitClient.UsageInfo) {
 	if di.LastUsedAt != nil {
 		lastAccessed = units.HumanDuration(time.Since(*di.LastUsedAt)) + " ago"
 	}
-	fmt.Fprintf(tw, "%-40s\t%-5v\t%-10s\t%s\n", id, !di.InUse, size, lastAccessed)
+	_, _ = fmt.Fprintf(tw, "%-40s\t%-5v\t%-10s\t%s\n", id, !di.InUse, size, lastAccessed)
 }
 
 func printSummary(tw *tabwriter.Writer, du []*buildkitClient.UsageInfo) {
@@ -52,17 +52,17 @@ func printSummary(tw *tabwriter.Writer, du []*buildkitClient.UsageInfo) {
 	}
 
 	if shared > 0 {
-		fmt.Fprintf(tw, "Shared:\t%s\n", units.HumanSize(float64(shared)))
-		fmt.Fprintf(tw, "Private:\t%s\n", units.HumanSize(float64(total-shared)))
+		_, _ = fmt.Fprintf(tw, "Shared:\t%s\n", units.HumanSize(float64(shared)))
+		_, _ = fmt.Fprintf(tw, "Private:\t%s\n", units.HumanSize(float64(total-shared)))
 	}
 
-	fmt.Fprintf(tw, "Reclaimable:\t%s\n", units.HumanSize(float64(reclaimable)))
-	fmt.Fprintf(tw, "Total:\t%s\n", units.HumanSize(float64(total)))
-	tw.Flush()
+	_, _ = fmt.Fprintf(tw, "Reclaimable:\t%s\n", units.HumanSize(float64(reclaimable)))
+	_, _ = fmt.Fprintf(tw, "Total:\t%s\n", units.HumanSize(float64(total)))
+	_ = tw.Flush()
 }
 
 func printKV(w io.Writer, k string, v interface{}) {
-	fmt.Fprintf(w, "%s:\t%v\n", k, v)
+	_, _ = fmt.Fprintf(w, "%s:\t%v\n", k, v)
 }
 
 func printVerbose(tw *tabwriter.Writer, du []*buildkitClient.UsageInfo) {
@@ -87,20 +87,20 @@ func printVerbose(tw *tabwriter.Writer, du []*buildkitClient.UsageInfo) {
 			printKV(tw, "Type", di.RecordType)
 		}
 
-		fmt.Fprintf(tw, "\n")
+		_, _ = fmt.Fprintf(tw, "\n")
 	}
 
-	tw.Flush()
+	_ = tw.Flush()
 }
 
-func getClientForPlatform(ctx context.Context, buildersMap map[string]string, builderImage, platform string) (*buildkitClient.Client, error) {
+func getClientForPlatform(ctx context.Context, buildersMap map[string]string, bc BuilderConfig, platform string) (*buildkitClient.Client, error) {
 	p, err := platforms.Parse(platform)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse platform: %s", err)
 	}
-	dr := newDockerRunner(false)
-	builderName := getBuilderForPlatform(p.Architecture, buildersMap)
-	client, err := dr.builder(ctx, builderName, builderImage, platform, false)
+	dr := NewDockerRunner(false, bc)
+	dockerContext := getBuilderForPlatform(p.Architecture, buildersMap)
+	client, err := dr.Builder(ctx, dockerContext, platform)
 	if err != nil {
 		return nil, fmt.Errorf("unable to ensure builder container: %v", err)
 	}
@@ -108,11 +108,11 @@ func getClientForPlatform(ctx context.Context, buildersMap map[string]string, bu
 }
 
 // DiskUsage of builder
-func DiskUsage(buildersMap map[string]string, builderImage string, platformsToClean []string, verbose bool) error {
+func DiskUsage(buildersMap map[string]string, bc BuilderConfig, platformsToClean []string, verbose bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	for _, platform := range platformsToClean {
-		client, err := getClientForPlatform(ctx, buildersMap, builderImage, platform)
+		client, err := getClientForPlatform(ctx, buildersMap, bc, platform)
 		if err != nil {
 			return fmt.Errorf("cannot get client: %s", err)
 		}
@@ -143,12 +143,12 @@ func DiskUsage(buildersMap map[string]string, builderImage string, platformsToCl
 }
 
 // PruneBuilder clean build cache of builder
-func PruneBuilder(buildersMap map[string]string, builderImage string, platformsToClean []string, verbose bool) error {
+func PruneBuilder(buildersMap map[string]string, bc BuilderConfig, platformsToClean []string, verbose bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	total := int64(0)
 	for _, platform := range platformsToClean {
-		client, err := getClientForPlatform(ctx, buildersMap, builderImage, platform)
+		client, err := getClientForPlatform(ctx, buildersMap, bc, platform)
 		if err != nil {
 			return fmt.Errorf("cannot get client: %s", err)
 		}

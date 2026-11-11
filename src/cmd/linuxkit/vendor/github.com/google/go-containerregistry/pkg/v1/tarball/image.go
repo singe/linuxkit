@@ -21,13 +21,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"sync"
 
-	"github.com/google/go-containerregistry/internal/gzip"
+	comp "github.com/google/go-containerregistry/internal/compression"
+	"github.com/google/go-containerregistry/pkg/compression"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/partial"
@@ -166,7 +166,13 @@ func (i *image) areLayersCompressed() (bool, error) {
 		return false, err
 	}
 	defer blob.Close()
-	return gzip.Is(blob)
+
+	cp, _, err := comp.PeekCompression(blob)
+	if err != nil {
+		return false, err
+	}
+
+	return cp != compression.None, nil
 }
 
 func (i *image) loadTarDescriptorAndConfig() error {
@@ -195,7 +201,7 @@ func (i *image) loadTarDescriptorAndConfig() error {
 	}
 	defer cfg.Close()
 
-	i.config, err = ioutil.ReadAll(cfg)
+	i.config, err = io.ReadAll(cfg)
 	if err != nil {
 		return err
 	}
@@ -213,13 +219,22 @@ type tarFile struct {
 }
 
 func extractFileFromTar(opener Opener, filePath string) (io.ReadCloser, error) {
+	return followLinks(opener, filePath, make(map[string]bool))
+}
+
+func followLinks(opener Opener, filePath string, visited map[string]bool) (io.ReadCloser, error) {
+	if visited[filePath] {
+		return nil, fmt.Errorf("link cycle detected for %s", filePath)
+	}
+	visited[filePath] = true
+
 	f, err := opener()
 	if err != nil {
 		return nil, err
 	}
-	close := true
+	needClose := true
 	defer func() {
-		if close {
+		if needClose {
 			f.Close()
 		}
 	}()
@@ -236,9 +251,9 @@ func extractFileFromTar(opener Opener, filePath string) (io.ReadCloser, error) {
 		if hdr.Name == filePath {
 			if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
 				currentDir := filepath.Dir(filePath)
-				return extractFileFromTar(opener, path.Join(currentDir, hdr.Linkname))
+				return followLinks(opener, path.Join(currentDir, path.Clean(hdr.Linkname)), visited)
 			}
-			close = false
+			needClose = false
 			return tarFile{
 				Reader: tf,
 				Closer: f,
@@ -293,18 +308,29 @@ func (i *uncompressedImage) LayerByDiffID(h v1.Hash) (partial.UncompressedLayer,
 			// v1.Layer doesn't force consumers to care about whether the layer is compressed
 			// we should be fine returning the DockerLayer media type
 			mt := types.DockerLayer
-			if bd, ok := i.imgDescriptor.LayerSources[h]; ok {
-				// Overwrite the mediaType for foreign layers.
-				return &foreignUncompressedLayer{
-					uncompressedLayerFromTarball: uncompressedLayerFromTarball{
-						diffID:    diffID,
-						mediaType: bd.MediaType,
-						opener:    i.opener,
-						filePath:  i.imgDescriptor.Layers[idx],
-					},
-					desc: bd,
-				}, nil
+			bd, ok := i.imgDescriptor.LayerSources[h]
+			if ok {
+				// This is janky, but we don't want to implement Descriptor for
+				// uncompressed layers because it breaks a bunch of assumptions in partial.
+				// See https://github.com/google/go-containerregistry/issues/1870
+				docker25workaround := bd.MediaType == types.DockerUncompressedLayer || bd.MediaType == types.OCIUncompressedLayer
+
+				if !docker25workaround {
+					// Overwrite the mediaType for foreign layers.
+					return &foreignUncompressedLayer{
+						uncompressedLayerFromTarball: uncompressedLayerFromTarball{
+							diffID:    diffID,
+							mediaType: bd.MediaType,
+							opener:    i.opener,
+							filePath:  i.imgDescriptor.Layers[idx],
+						},
+						desc: bd,
+					}, nil
+				}
+
+				// Intentional fall through.
 			}
+
 			return &uncompressedLayerFromTarball{
 				diffID:    diffID,
 				mediaType: mt,

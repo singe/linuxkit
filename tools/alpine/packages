@@ -10,6 +10,9 @@ autoconf
 automake
 bash
 bc
+bcc
+bcc-dev
+bcc-tools
 binutils
 binutils-dev
 bison
@@ -29,6 +32,7 @@ cmake
 coreutils
 cryptsetup
 curl
+device-mapper
 dhcpcd
 diffutils
 dosfstools
@@ -37,6 +41,7 @@ e2fsprogs
 e2fsprogs-extra
 ebtables
 elfutils-dev
+erofs-utils
 ethtool
 expect
 findutils
@@ -50,6 +55,8 @@ gmp-dev
 gnupg
 go
 grep
+grub
+grub-efi
 hvtools
 installkernel
 iperf3
@@ -71,10 +78,12 @@ libseccomp-dev
 libseccomp-static
 libtirpc-dev
 libtool
+libxml2
 linux-headers
-llvm
-llvm-dev
-llvm-static
+llvm19
+llvm19-dev
+llvm19-static
+llvm19-gtest
 lsscsi
 lvm2
 make
@@ -97,6 +106,9 @@ openssl-dev
 patch
 pigz
 python3
+python3-dev
+py3-pefile
+py3-pip
 qemu-aarch64
 qemu-arm
 qemu-guest-agent
@@ -130,5 +142,8 @@ xorriso
 xz
 xz-dev
 zfs
+zip
 zlib-dev
 zlib-static
+zstd
+zstd-static

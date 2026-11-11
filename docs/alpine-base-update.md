@@ -101,9 +101,9 @@ In the below, replace `linuxkit-arch` with each build machine's name:
 
 ```sh
 # one of these will not be necessary, as you will likely be executing it on one of these machines
-scp linuxkit-s390x:$LK_ROOT/tools/alpine/versions.s390x $LK_ROOT/tools/alpine/versions.s390x
-scp linuxkit-aarch64:$LK_ROOT/tools/alpine/versions.aarch64 $LK_ROOT/tools/alpine/versions.aarch64
-scp linuxkit-x86_64:$LK_ROOT/tools/alpine/versions.x86_64 $LK_ROOT/tools/alpine/versions.x86_64
+for arch in x86_64 aarch64 riscv64; do
+    scp linuxkit-$arch:$LK_ROOT/tools/alpine/versions.$arch $LK_ROOT/tools/alpine/versions.$arch
+done
 git commit -a -s -m "tools/alpine: Update to latest"
 git push $LK_REMOTE $LK_BRANCH
 ```
@@ -131,7 +131,7 @@ following which is an explanation of each one.
 # Update tools packages
 cd $LK_ROOT/tools
 $LK_ROOT/scripts/update-component-sha.sh --image $LK_ALPINE
-git checkout grub/Dockerfile
+git checkout mkimage-rpi3/Dockerfile
 git commit -a -s -m "tools: Update to the latest linuxkit/alpine"
 
 # Update tools dependencies
@@ -179,8 +179,12 @@ On your primary build machine, update the other tools packages.
 
 Note, the `git checkout` reverts the changes made by
 `update-component-sha.sh` to files which are accidentally updated.
-Important is the `git checkout` of `grub`. This is a bit old and only can be built with specific
-older versions of packages like `gcc`, and should not be updated.
+Important is the `git checkout` of some sensitive packages that only can be built with
+specific older versions of upstream packages:
+
+* `mkimage-rpi3`
+
+Only update those if you know what you are doing with them.
 
 Then we update any dependencies of these tools.
 

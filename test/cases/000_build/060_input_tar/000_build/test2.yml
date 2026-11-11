@@ -1,0 +1,36 @@
+kernel:
+  image: linuxkit/kernel:6.18.60
+  cmdline: "console=tty0 console=ttyS0 console=ttyAMA0"
+init:
+  - linuxkit/init:075ff447b68e23feef95589c90010a039533e5b5
+  - linuxkit/runc:9442aa234715e751a16144f1d4ae3fd1a00fd492
+  - linuxkit/containerd:eb5daf20704109ea58abb38d2b808e0c3a7e3717
+  - linuxkit/ca-certificates:695574301bd08dda987dccb31e384f7fab3c5c05
+onboot:
+  - name: sysctl
+    image: linuxkit/sysctl:43ac1d39da329c3567fcb9689e5ca99de6d169b6
+  - name: dhcpcd
+    image: linuxkit/dhcpcd:b87e9ececac55a65eaa592f4dd8b4e0c3009afdb
+    command: ["/sbin/dhcpcd", "--nobackground", "-f", "/dhcpcd.conf", "-1", "change"]
+onshutdown:
+  - name: shutdown
+    image: busybox:latest
+    command: ["/bin/echo", "so long and thanks for all the fish"]
+services:
+  - name: getty
+    image: linuxkit/getty:a86d74c8f89be8956330c3b115b0b1f2e09ef6e0
+    env:
+     - INSECURE=true
+  - name: nginx
+    image: nginx:1.19.5-alpine
+    capabilities:
+     - CAP_NET_BIND_SERVICE
+     - CAP_CHOWN
+     - CAP_SETUID
+     - CAP_SETGID
+     - CAP_DAC_OVERRIDE
+    binds:
+     - /etc/resolv.conf:/etc/resolv.conf
+files:
+  - path: etc/linuxkit-config
+    metadata: yaml

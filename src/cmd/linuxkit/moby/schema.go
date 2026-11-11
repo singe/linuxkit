@@ -37,6 +37,21 @@ var schema = `
         "type": "array",
         "items": { "$ref": "#/definitions/file" }
     },
+    "volume": {
+      "type": "object",
+      "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "image": {"type": "string"},
+          "readonly": {"type": "boolean"},
+          "format": {"enum": ["oci","filesystem"]},
+          "platforms": {"$ref": "#/definitions/strings"}
+        }
+    },
+    "volumes": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/volume" }
+    },
     "trust": {
       "type": "object",
       "additionalProperties": false,
@@ -60,7 +75,15 @@ var schema = `
         "destination": { "type": "string" },
         "type": { "type": "string" },
         "source": { "type": "string" },
-        "options": { "$ref": "#/definitions/strings" }
+        "options": { "$ref": "#/definitions/strings" },
+        "uidmappings": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/idmapping" }
+        },
+        "gidmappings": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/idmapping" }
+        }
       }
     },
     "mounts": {
@@ -325,7 +348,8 @@ var schema = `
     "onshutdown": { "$ref": "#/definitions/images" },
     "services": { "$ref": "#/definitions/images" },
     "trust": { "$ref": "#/definitions/trust" },
-    "files": { "$ref": "#/definitions/files" }
+    "files": { "$ref": "#/definitions/files" },
+    "volumes": { "$ref": "#/definitions/volumes" }
   }
 }
 `

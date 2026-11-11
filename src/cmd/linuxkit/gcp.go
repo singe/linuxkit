@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"context"
+
 	"github.com/moby/term"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
@@ -113,7 +114,7 @@ func (g GCPClient) UploadFile(src, dst, bucketName string, public bool) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	objectCall := g.storage.Objects.Insert(bucketName, &storage.Object{Name: dst}).Media(f)
 
@@ -377,7 +378,7 @@ func (g GCPClient) GetInstanceSerialOutput(instance, zone string) error {
 			}
 			return err
 		}
-		fmt.Printf(res.Contents)
+		fmt.Printf("%s\n", res.Contents)
 		next = res.Next
 		// When the instance has been stopped, Start and Next will both be 0
 		if res.Start > 0 && next == 0 {
@@ -395,7 +396,7 @@ func (g GCPClient) ConnectToInstanceSerialPort(instance, zone string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
@@ -429,19 +430,19 @@ func (g GCPClient) ConnectToInstanceSerialPort(instance, zone string) error {
 		break
 	}
 	if conn == nil {
-		return fmt.Errorf(err.Error())
+		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	session, err := conn.NewSession()
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("Unable to setup stdin for session: %v", err)
+		return fmt.Errorf("unable to setup stdin for session: %v", err)
 	}
 	go func() {
 		_, _ = io.Copy(stdin, os.Stdin)
@@ -449,7 +450,7 @@ func (g GCPClient) ConnectToInstanceSerialPort(instance, zone string) error {
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("Unable to setup stdout for session: %v", err)
+		return fmt.Errorf("unable to setup stdout for session: %v", err)
 	}
 	go func() {
 		_, _ = io.Copy(os.Stdout, stdout)
@@ -457,7 +458,7 @@ func (g GCPClient) ConnectToInstanceSerialPort(instance, zone string) error {
 
 	stderr, err := session.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("Unable to setup stderr for session: %v", err)
+		return fmt.Errorf("unable to setup stderr for session: %v", err)
 	}
 	go func() {
 		_, _ = io.Copy(os.Stderr, stderr)

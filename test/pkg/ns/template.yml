@@ -1,18 +1,18 @@
 # Sample YAML file for manual testing
 kernel:
-  image: linuxkit/kernel:5.10.104
+  image: linuxkit/kernel:6.18.60
   cmdline: "console=ttyS0"
 init:
-  - linuxkit/init:144c9cee8aed9e30a16940f2bf1d3813883aceda
-  - linuxkit/runc:436357ce16dd663e24f595bcec26d5ae476c998e
+  - linuxkit/init:075ff447b68e23feef95589c90010a039533e5b5
+  - linuxkit/runc:9442aa234715e751a16144f1d4ae3fd1a00fd492
 onboot:
   - name: test-ns
-    image: linuxkit/test-ns:bd163e189ce4985a798aa422c5509ef44e031756
+    image: linuxkit/test-ns:5d9261984b4a6234f140032e9a5b2bd8c8d79258
     command: ["/bin/sh", "/runp-runc-net.sh", "mix-unix"]
     # command: ["/bin/sh", "/runc-net.sh", "-l", "5", "-i", "2", "-c", "5", "-p", "unix", "-ip", "6"]
     mounts: # for runc
     - type: cgroup
       options: ["rw"]
   - name: poweroff
-    image: linuxkit/poweroff:992d9c7531166fe071d945e8b2728d8b61eb8d5a
+    image: linuxkit/poweroff:4059858a555bed90c2280fa9b060b7a8f8de6d45
     command: ["/bin/sh", "/poweroff.sh", "3"]

@@ -27,16 +27,33 @@ import (
 // docker_version and os.version are not part of the spec but included
 // for backwards compatibility.
 type ConfigFile struct {
-	Architecture  string    `json:"architecture"`
-	Author        string    `json:"author,omitempty"`
-	Container     string    `json:"container,omitempty"`
-	Created       Time      `json:"created,omitempty"`
+	Architecture string `json:"architecture"`
+	Author       string `json:"author,omitempty"`
+	Container    string `json:"container,omitempty"`
+	Created      Time   `json:"created,omitempty"`
+	// Deprecated: This field is deprecated and will be removed in the next release.
 	DockerVersion string    `json:"docker_version,omitempty"`
 	History       []History `json:"history,omitempty"`
 	OS            string    `json:"os"`
 	RootFS        RootFS    `json:"rootfs"`
 	Config        Config    `json:"config"`
 	OSVersion     string    `json:"os.version,omitempty"`
+	Variant       string    `json:"variant,omitempty"`
+	OSFeatures    []string  `json:"os.features,omitempty"`
+}
+
+// Platform attempts to generates a Platform from the ConfigFile fields.
+func (cf *ConfigFile) Platform() *Platform {
+	if cf.OS == "" && cf.Architecture == "" && cf.OSVersion == "" && cf.Variant == "" && len(cf.OSFeatures) == 0 {
+		return nil
+	}
+	return &Platform{
+		OS:           cf.OS,
+		Architecture: cf.Architecture,
+		OSVersion:    cf.OSVersion,
+		Variant:      cf.Variant,
+		OSFeatures:   cf.OSFeatures,
+	}
 }
 
 // History is one entry of a list recording how this container image was built.
@@ -89,8 +106,10 @@ type HealthConfig struct {
 }
 
 // Config is a submessage of the config file described as:
-//   The execution parameters which SHOULD be used as a base when running
-//   a container using the image.
+//
+//	The execution parameters which SHOULD be used as a base when running
+//	a container using the image.
+//
 // The names of the fields in this message are chosen to reflect the JSON
 // payload of the Config as defined here:
 // https://git.io/vrAET

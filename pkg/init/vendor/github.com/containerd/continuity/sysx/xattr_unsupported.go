@@ -1,4 +1,4 @@
-// +build !linux,!darwin
+//go:build !linux && !darwin
 
 /*
    Copyright The containerd Authors.

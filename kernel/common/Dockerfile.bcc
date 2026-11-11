@@ -1,0 +1,82 @@
+ARG BUILD_IMAGE
+ARG KERNEL_VERSION
+ARG PKG_HASH
+
+FROM linuxkit/kernel:${KERNEL_VERSION}-${PKG_HASH} as ksrc
+
+FROM ${BUILD_IMAGE} AS build
+RUN apk update && apk upgrade -a && \
+  apk add --no-cache \
+  argp-standalone \
+  autoconf \
+  automake \
+  bison \
+  build-base \
+  clang \
+  clang-dev \
+  clang-static \
+  cmake \
+  curl \
+  elfutils-dev \
+  flex-dev \
+  gettext-dev \
+  git \
+  iperf3 \
+  libedit-dev \
+  libtool \
+  libxml2 \
+  llvm19 \
+  llvm19-dev \
+  llvm19-static \
+  llvm19-gtest \
+  m4 \
+  musl-fts-dev \
+  python3 \
+  py3-pip \
+  xz \
+  zip \
+  zlib-dev \
+  && true
+
+WORKDIR /build
+
+COPY --from=ksrc /kernel-headers.tar /build
+COPY --from=ksrc /kernel-dev.tar /build
+COPY --from=ksrc /kernel.tar /build
+RUN tar xf /build/kernel-headers.tar && \
+    tar xf /build/kernel-dev.tar && \
+    tar xf /build/kernel.tar
+
+RUN mkdir -p /out/usr/ && \
+    cp -a /build/usr/src /out/usr/ && \
+    cp -a /build/usr/include /out/usr
+RUN mkdir -p /out/usr/lib && \
+    cp -a /usr/lib/libelf* /out/usr/lib/ && \
+    cp -a /usr/lib/libstdc* /out/usr/lib/ && \
+    cp -a /usr/lib/libintl* /out/usr/lib/
+
+RUN PYTHONPATH=$(python3 -c "import sysconfig; print(sysconfig.get_path('stdlib'))") && mkdir -p /out${PYTHONPATH} && \
+    cp -a ${PYTHONPATH}/site-packages /out/${PYTHONPATH}
+FROM ${BUILD_IMAGE} as mirror
+RUN mkdir -p /out/etc/apk && cp -r /etc/apk/* /out/etc/apk/
+RUN apk update && apk upgrade -a && \
+  apk add --no-cache --initdb -p /out \
+  bcc \
+  bcc-dev \
+  bcc-tools \
+  busybox \
+  python3 \
+  zlib \
+  && true
+
+# lua/luajit is not available on all platforms, but we do not consider it blocking
+RUN apk add --no-cache -p /out luajit || true
+RUN apk add --no-cache -p /out bcc-lua || true
+
+FROM scratch
+ENTRYPOINT []
+CMD []
+WORKDIR /
+ENV LD_LIBRARY_PATH=${LD_LIBRARY_PATH}
+COPY --from=mirror /out /
+COPY --from=build /out /
